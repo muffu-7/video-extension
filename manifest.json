@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Loop selected time segments on YouTube videos endlessly.",
   "permissions": ["storage", "activeTab"],
+  "host_permissions": ["http://127.0.0.1:5055/*"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

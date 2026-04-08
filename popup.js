@@ -6,6 +6,16 @@
   const errorEl = document.getElementById("error");
   const noVideoEl = document.getElementById("no-video");
   const mainControls = document.getElementById("main-controls");
+  const generateBtn = document.getElementById("generate-btn");
+  const maxMinutesInput = document.getElementById("max-minutes");
+  const instructionsInput = document.getElementById("instructions");
+  const generateStatusEl = document.getElementById("generate-status");
+  const askInput = document.getElementById("ask-input");
+  const askBtn = document.getElementById("ask-btn");
+  const outputBox = document.getElementById("output-box");
+  const insightBtns = document.querySelectorAll(".insight-btn");
+
+  const SERVER_URL = "http://127.0.0.1:5055";
 
   let currentVideoId = null;
 
@@ -53,15 +63,7 @@
     return { segments };
   }
 
-  function formatTime(secs) {
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = Math.floor(secs % 60);
-    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-    return `${m}:${String(s).padStart(2, "0")}`;
-  }
-
-  // --- Status display ---
+  // --- Status / error display ---
 
   function showError(msg) {
     errorEl.textContent = msg;
@@ -85,6 +87,35 @@
     } else {
       statusEl.textContent = `${label} saved \u2014 disabled`;
     }
+  }
+
+  // --- Output box helpers ---
+
+  function outputKey(videoId) {
+    return `output_${videoId}`;
+  }
+
+  function showOutput(text, className, persist) {
+    outputBox.hidden = false;
+    outputBox.textContent = text;
+    outputBox.className = `output-box ${className || ""}`;
+    if (persist !== false && currentVideoId && className !== "loading") {
+      chrome.storage.local.set({
+        [outputKey(currentVideoId)]: { text, className: className || "" },
+      });
+    }
+  }
+
+  function restoreOutput() {
+    if (!currentVideoId) return;
+    chrome.storage.local.get(outputKey(currentVideoId), (result) => {
+      const saved = result[outputKey(currentVideoId)];
+      if (saved && saved.text) {
+        outputBox.hidden = false;
+        outputBox.textContent = saved.text;
+        outputBox.className = `output-box ${saved.className || ""}`;
+      }
+    });
   }
 
   // --- Messaging helpers ---
@@ -125,6 +156,8 @@
       }
       updateStatus(data);
     });
+
+    restoreOutput();
   }
 
   // --- Save ---
@@ -150,6 +183,117 @@
       updateStatus(data);
       sendToContent({ type: "update-segments" });
     });
+  });
+
+  // --- Generate segments ---
+
+  generateBtn.addEventListener("click", async () => {
+    if (!currentVideoId) return;
+    clearError();
+    generateStatusEl.hidden = false;
+    generateStatusEl.textContent = "Fetching transcript & generating segments...";
+    generateStatusEl.className = "generate-status";
+    generateBtn.disabled = true;
+
+    const maxMin = maxMinutesInput.value ? parseInt(maxMinutesInput.value, 10) : null;
+    const instructions = instructionsInput.value.trim();
+    const body = { videoId: currentVideoId };
+    if (maxMin && maxMin > 0) body.maxMinutes = maxMin;
+    if (instructions) body.instructions = instructions;
+
+    try {
+      const resp = await fetch(`${SERVER_URL}/generate-segments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        generateStatusEl.textContent = data.error || "Server error";
+        generateStatusEl.className = "generate-status error";
+        return;
+      }
+
+      if (data.extensionInput) {
+        segmentsInput.value = data.extensionInput;
+        generateStatusEl.textContent = "Segments generated \u2014 hit Save to apply.";
+      } else {
+        generateStatusEl.textContent = "LLM returned no segments. Try again.";
+        generateStatusEl.className = "generate-status error";
+      }
+    } catch (e) {
+      generateStatusEl.textContent = "Cannot reach local server. Is it running?";
+      generateStatusEl.className = "generate-status error";
+    } finally {
+      generateBtn.disabled = false;
+    }
+  });
+
+  // --- Video insights (summary buttons) ---
+
+  insightBtns.forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!currentVideoId) return;
+
+      const summaryType = btn.dataset.type;
+      showOutput("Thinking...", "loading");
+      insightBtns.forEach((b) => (b.disabled = true));
+
+      try {
+        const resp = await fetch(`${SERVER_URL}/summary`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: currentVideoId, type: summaryType }),
+        });
+        const data = await resp.json();
+
+        if (!resp.ok) {
+          showOutput(data.error || "Server error", "error");
+          return;
+        }
+
+        showOutput(data.summary || "No response returned.", "");
+      } catch (e) {
+        showOutput("Cannot reach local server. Is it running?", "error");
+      } finally {
+        insightBtns.forEach((b) => (b.disabled = false));
+      }
+    });
+  });
+
+  // --- Ask about the video ---
+
+  askBtn.addEventListener("click", async () => {
+    const question = askInput.value.trim();
+    if (!question || !currentVideoId) return;
+
+    showOutput("Thinking...", "loading");
+    askBtn.disabled = true;
+
+    try {
+      const resp = await fetch(`${SERVER_URL}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: currentVideoId, question }),
+      });
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        showOutput(data.error || "Server error", "error");
+        return;
+      }
+
+      showOutput(data.answer || "No answer returned.", "");
+    } catch (e) {
+      showOutput("Cannot reach local server. Is it running?", "error");
+    } finally {
+      askBtn.disabled = false;
+    }
+  });
+
+  askInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") askBtn.click();
   });
 
   // --- Toggle ---

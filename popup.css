@@ -10,7 +10,7 @@ body {
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   background: #1a1a2e;
   color: #e0e0e0;
-  width: 320px;
+  width: 340px;
   min-height: 180px;
 }
 
@@ -26,14 +26,89 @@ h1 {
   letter-spacing: 0.3px;
 }
 
+.generate-section label,
+.insights-section label,
+.ask-section label,
 label[for="segments-input"] {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   color: #aaa;
   margin-bottom: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+#instructions {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #16213e;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+  margin-bottom: 8px;
+  transition: border-color 0.2s;
+}
+
+#instructions:focus {
+  border-color: #e94560;
+}
+
+#instructions::placeholder {
+  color: #555;
+  font-size: 11px;
+}
+
+.generate-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.generate-row input[type="number"] {
+  width: 80px;
+  padding: 7px 8px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #16213e;
+  color: #e0e0e0;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+  -moz-appearance: textfield;
+}
+
+.generate-row input[type="number"]:focus {
+  border-color: #e94560;
+}
+
+.generate-row input::placeholder {
+  color: #555;
+  font-size: 11px;
+}
+
+.generate-row button {
+  flex: 1;
+  padding: 7px 12px;
+  font-size: 12px;
+}
+
+.generate-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #7ec8e3;
+}
+
+.generate-status.error {
+  color: #ff6b6b;
+}
+
+.divider {
+  height: 1px;
+  background: #2a2a4a;
+  margin: 14px 0;
 }
 
 textarea {
@@ -74,7 +149,7 @@ button {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s, opacity 0.2s;
 }
 
 button:hover {
@@ -83,6 +158,11 @@ button:hover {
 
 button:active {
   transform: scale(0.97);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .toggle-wrap {
@@ -150,6 +230,89 @@ button:active {
 .error {
   margin-top: 8px;
   font-size: 12px;
+  color: #ff6b6b;
+}
+
+/* --- Insights buttons --- */
+
+.insights-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.insight-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #16213e;
+  border: 1px solid #333;
+  color: #ccc;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.insight-btn:hover {
+  background: #e94560;
+  border-color: #e94560;
+  color: #fff;
+}
+
+/* --- Ask section --- */
+
+.ask-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ask-row input {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #16213e;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.ask-row input:focus {
+  border-color: #e94560;
+}
+
+.ask-row input::placeholder {
+  color: #555;
+  font-size: 11px;
+}
+
+.ask-row button {
+  padding: 7px 16px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* --- Shared output box --- */
+
+.output-box {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #16213e;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d0d0d0;
+  max-height: 250px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.output-box.loading {
+  color: #7ec8e3;
+}
+
+.output-box.error {
   color: #ff6b6b;
 }
 

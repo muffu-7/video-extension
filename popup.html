@@ -13,6 +13,30 @@
     </div>
 
     <div id="main-controls">
+      <div class="generate-section">
+        <label>Auto-generate</label>
+        <input
+          type="text"
+          id="instructions"
+          placeholder="e.g. focus only on Iran topics, skip market talk"
+          spellcheck="false"
+        >
+        <div class="generate-row">
+          <input
+            type="number"
+            id="max-minutes"
+            placeholder="Max min"
+            min="1"
+            max="120"
+            title="Max total runtime in minutes (optional)"
+          >
+          <button id="generate-btn">Generate Segments</button>
+        </div>
+        <p id="generate-status" class="generate-status" hidden></p>
+      </div>
+
+      <div class="divider"></div>
+
       <label for="segments-input">Segments</label>
       <textarea
         id="segments-input"
@@ -34,6 +58,34 @@
 
       <p id="status" class="status"></p>
       <p id="error" class="error" hidden></p>
+
+      <div class="divider"></div>
+
+      <div class="insights-section">
+        <label>Video insights</label>
+        <div class="insights-buttons">
+          <button id="btn-detailed" class="insight-btn" data-type="detailed">Detailed Summary</button>
+          <button id="btn-short" class="insight-btn" data-type="short">Short Summary</button>
+          <button id="btn-pointers" class="insight-btn" data-type="key-pointers">Key Pointers</button>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="ask-section">
+        <label>Ask about this video</label>
+        <div class="ask-row">
+          <input
+            type="text"
+            id="ask-input"
+            placeholder="e.g. What are the key arguments about Iran?"
+            spellcheck="false"
+          >
+          <button id="ask-btn">Ask</button>
+        </div>
+      </div>
+
+      <div id="output-box" class="output-box" hidden></div>
     </div>
   </div>
   <script src="popup.js"></script>
