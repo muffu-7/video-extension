@@ -14,10 +14,17 @@
   const askBtn = document.getElementById("ask-btn");
   const outputBox = document.getElementById("output-box");
   const insightBtns = document.querySelectorAll(".insight-btn");
+  const rangeMin = document.getElementById("range-min");
+  const rangeMax = document.getElementById("range-max");
+  const rangeFill = document.getElementById("range-fill");
+  const rangeStartLabel = document.getElementById("range-start-label");
+  const rangeEndLabel = document.getElementById("range-end-label");
+  const fullVideoBtn = document.getElementById("full-video-btn");
 
   const SERVER_URL = "http://127.0.0.1:5055";
 
   let currentVideoId = null;
+  let videoDuration = 0;
 
   function storageKey(videoId) {
     return `segments_${videoId}`;
@@ -89,6 +96,104 @@
     }
   }
 
+  // --- Slider helpers ---
+
+  function formatSliderTime(seconds) {
+    const s = Math.round(seconds);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  }
+
+  function updateSliderUI() {
+    const min = Number(rangeMin.value);
+    const max = Number(rangeMax.value);
+    const total = Number(rangeMin.max) || 1;
+    const pctLeft = (min / total) * 100;
+    const pctRight = (max / total) * 100;
+    rangeFill.style.left = pctLeft + "%";
+    rangeFill.style.width = (pctRight - pctLeft) + "%";
+    rangeStartLabel.value = formatSliderTime(min);
+    rangeEndLabel.value = formatSliderTime(max);
+  }
+
+  function initSlider(duration, currentTime) {
+    videoDuration = Math.floor(duration) || 0;
+    if (videoDuration <= 0) {
+      videoDuration = 600;
+    }
+    rangeMin.min = 0;
+    rangeMin.max = videoDuration;
+    rangeMax.min = 0;
+    rangeMax.max = videoDuration;
+
+    const windowStart = Math.max(0, Math.floor(currentTime) - 120);
+    const windowEnd = Math.min(videoDuration, Math.floor(currentTime) + 120);
+    rangeMin.value = windowStart;
+    rangeMax.value = windowEnd;
+    updateSliderUI();
+  }
+
+  function getWindowTimes() {
+    return {
+      startTime: Number(rangeMin.value),
+      endTime: Number(rangeMax.value),
+    };
+  }
+
+  rangeMin.addEventListener("input", () => {
+    if (Number(rangeMin.value) >= Number(rangeMax.value)) {
+      rangeMin.value = Number(rangeMax.value) - 1;
+    }
+    updateSliderUI();
+  });
+
+  rangeMax.addEventListener("input", () => {
+    if (Number(rangeMax.value) <= Number(rangeMin.value)) {
+      rangeMax.value = Number(rangeMin.value) + 1;
+    }
+    updateSliderUI();
+  });
+
+  fullVideoBtn.addEventListener("click", () => {
+    rangeMin.value = 0;
+    rangeMax.value = videoDuration;
+    updateSliderUI();
+  });
+
+  function applyTimeInput(inputEl, targetRange, isStart) {
+    const seconds = parseTime(inputEl.value);
+    if (isNaN(seconds) || seconds < 0) {
+      updateSliderUI();
+      return;
+    }
+    const clamped = Math.max(0, Math.min(videoDuration, Math.round(seconds)));
+    if (isStart) {
+      rangeMin.value = Math.min(clamped, Number(rangeMax.value) - 1);
+    } else {
+      rangeMax.value = Math.max(clamped, Number(rangeMin.value) + 1);
+    }
+    updateSliderUI();
+  }
+
+  rangeStartLabel.addEventListener("change", () => {
+    applyTimeInput(rangeStartLabel, rangeMin, true);
+  });
+
+  rangeEndLabel.addEventListener("change", () => {
+    applyTimeInput(rangeEndLabel, rangeMax, false);
+  });
+
+  rangeStartLabel.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { rangeStartLabel.blur(); }
+  });
+
+  rangeEndLabel.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { rangeEndLabel.blur(); }
+  });
+
   // --- Output box helpers ---
 
   function outputKey(videoId) {
@@ -146,6 +251,8 @@
     currentVideoId = resp.videoId;
     noVideoEl.hidden = true;
     mainControls.hidden = false;
+
+    initSlider(resp.duration || 0, resp.currentTime || 0);
 
     const key = storageKey(currentVideoId);
     chrome.storage.local.get(key, (result) => {
@@ -241,10 +348,16 @@
       insightBtns.forEach((b) => (b.disabled = true));
 
       try {
+        const win = getWindowTimes();
         const resp = await fetch(`${SERVER_URL}/summary`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ videoId: currentVideoId, type: summaryType }),
+          body: JSON.stringify({
+            videoId: currentVideoId,
+            type: summaryType,
+            startTime: win.startTime,
+            endTime: win.endTime,
+          }),
         });
         const data = await resp.json();
 
@@ -272,10 +385,16 @@
     askBtn.disabled = true;
 
     try {
+      const win = getWindowTimes();
       const resp = await fetch(`${SERVER_URL}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: currentVideoId, question }),
+        body: JSON.stringify({
+          videoId: currentVideoId,
+          question,
+          startTime: win.startTime,
+          endTime: win.endTime,
+        }),
       });
       const data = await resp.json();
 

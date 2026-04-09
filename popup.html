@@ -61,6 +61,24 @@
 
       <div class="divider"></div>
 
+      <div class="window-section">
+        <div class="window-header">
+          <label>Transcript window</label>
+          <button id="full-video-btn" class="small-btn">Full video</button>
+        </div>
+        <div class="range-slider">
+          <div class="range-slider-track"><div class="range-slider-fill" id="range-fill"></div></div>
+          <input type="range" id="range-min" min="0" max="100" value="0" step="1">
+          <input type="range" id="range-max" min="0" max="100" value="100" step="1">
+        </div>
+        <div class="range-labels">
+          <input type="text" id="range-start-label" value="00:00" spellcheck="false">
+          <input type="text" id="range-end-label" value="00:00" spellcheck="false">
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
       <div class="insights-section">
         <label>Video insights</label>
         <div class="insights-buttons">

@@ -132,7 +132,42 @@ The video jumps between those segments endlessly.
 3. Press **Enter** or click **Ask**
 4. The answer appears in the output box, based on the transcript
 
-## Keeping the server running (macOS Launch Agent)
+## Keeping the server running
+
+### Linux (systemd user service)
+
+A systemd user service is installed at:
+
+```
+~/.config/systemd/user/video-extension-server.service
+```
+
+It starts the server at login and restarts it automatically if it crashes.
+
+```bash
+# Reload after editing the service file
+systemctl --user daemon-reload
+
+# Enable (auto-start at login) + start now
+systemctl --user enable --now video-extension-server.service
+
+# Stop
+systemctl --user stop video-extension-server.service
+
+# Disable auto-start
+systemctl --user disable video-extension-server.service
+
+# Check status
+systemctl --user status video-extension-server.service
+
+# Check logs
+journalctl --user -u video-extension-server.service -f
+
+# Verify
+curl -s http://127.0.0.1:5055/health
+```
+
+### macOS (Launch Agent)
 
 A Launch Agent plist is installed at:
 

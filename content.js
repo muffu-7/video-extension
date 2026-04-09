@@ -170,7 +170,11 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "get-video-id") {
-      sendResponse({ videoId: getVideoId() });
+      sendResponse({
+        videoId: getVideoId(),
+        duration: video ? video.duration || 0 : 0,
+        currentTime: video ? video.currentTime || 0 : 0,
+      });
       return;
     }
 

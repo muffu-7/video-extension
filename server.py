@@ -93,7 +93,7 @@ def fetch_transcript(video_id):
     return data
 
 
-def get_transcript_text(video_id):
+def get_transcript_text(video_id, start_time=None, end_time=None):
     """Fetch transcript for a video and return (transcript_text, title) or raise."""
     data = fetch_transcript(video_id)
 
@@ -111,7 +111,7 @@ def get_transcript_text(video_id):
             track = t["transcript"]
             break
 
-    transcript_text = build_transcript_text(track)
+    transcript_text = build_transcript_text(track, start_time=start_time, end_time=end_time)
     if not transcript_text.strip():
         raise ValueError("Transcript is empty")
 
@@ -129,7 +129,7 @@ def format_time(seconds):
     return f"{m:02d}:{sec:02d}"
 
 
-def build_transcript_text(track):
+def build_transcript_text(track, start_time=None, end_time=None):
     lines = []
     for entry in track:
         try:
@@ -137,6 +137,10 @@ def build_transcript_text(track):
         except (ValueError, TypeError):
             continue
         if math.isnan(start):
+            continue
+        if start_time is not None and start < start_time:
+            continue
+        if end_time is not None and start > end_time:
             continue
         text = entry.get("text", "").replace("\n", " ")
         lines.append(f"{format_time(start)} {text}")
@@ -290,6 +294,8 @@ def ask_about_video():
     body = request.get_json(force=True)
     video_id = body.get("videoId")
     question = body.get("question", "").strip()
+    start_time = body.get("startTime")
+    end_time = body.get("endTime")
 
     if not video_id:
         return jsonify({"error": "videoId is required"}), 400
@@ -297,7 +303,7 @@ def ask_about_video():
         return jsonify({"error": "question is required"}), 400
 
     try:
-        transcript_text, title = get_transcript_text(video_id)
+        transcript_text, title = get_transcript_text(video_id, start_time=start_time, end_time=end_time)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
@@ -317,6 +323,8 @@ def summarize_video():
     body = request.get_json(force=True)
     video_id = body.get("videoId")
     summary_type = body.get("type", "detailed")
+    start_time = body.get("startTime")
+    end_time = body.get("endTime")
 
     if not video_id:
         return jsonify({"error": "videoId is required"}), 400
@@ -324,7 +332,7 @@ def summarize_video():
         return jsonify({"error": f"Invalid type. Use: {', '.join(SUMMARY_PROMPTS.keys())}"}), 400
 
     try:
-        transcript_text, title = get_transcript_text(video_id)
+        transcript_text, title = get_transcript_text(video_id, start_time=start_time, end_time=end_time)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
