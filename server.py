@@ -2,7 +2,12 @@
 """Local service that fetches a YouTube transcript and uses the Codex CLI to
 extract segments, generate summaries, and answer questions about videos."""
 
+import sys
+sys.dont_write_bytecode = True
+
+import base64
 import glob
+import io
 import json
 import math
 import os
@@ -16,10 +21,12 @@ import urllib.error
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
 
 load_dotenv()
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200 MB for visual analysis payloads
 CORS(app)
 
 TRANSCRIPT_API_URL = "https://www.youtube-transcript.io/api/transcripts"
@@ -147,8 +154,33 @@ def build_transcript_text(track, start_time=None, end_time=None):
     return "\n".join(lines)
 
 
-def run_codex(prompt, stdin_text):
-    """Run codex exec with a prompt and stdin, return the output."""
+def _parse_usage_from_jsonl(stdout_text):
+    """Extract token usage from codex exec --json JSONL output."""
+    usage = None
+    for line in stdout_text.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+            if event.get("type") == "turn.completed" and "usage" in event:
+                usage = event["usage"]
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return usage
+
+
+LEAN_FLAGS = [
+    "--disable", "apps",
+    "--disable", "plugins",
+    "--disable", "shell_tool",
+    "--disable", "unified_exec",
+    "--disable", "multi_agent",
+]
+
+
+def run_codex(prompt, stdin_text, search=False):
+    """Run codex exec with a prompt and stdin, return (output_text, usage_dict)."""
     codex_path = shutil.which("codex")
     if not codex_path:
         raise RuntimeError("codex CLI not found on PATH")
@@ -157,14 +189,21 @@ def run_codex(prompt, stdin_text):
         out_path = out_file.name
 
     try:
+        cmd = [
+            codex_path, "exec",
+            "--skip-git-repo-check",
+            "--json",
+            "--ephemeral",
+            "-s", "read-only",
+            "-o", out_path,
+            *LEAN_FLAGS,
+        ]
+        if search:
+            cmd += ["-c", 'web_search="live"']
+        cmd.append(prompt)
+
         result = subprocess.run(
-            [
-                codex_path, "exec",
-                "--skip-git-repo-check",
-                "-s", "read-only",
-                "-o", out_path,
-                prompt,
-            ],
+            cmd,
             input=stdin_text,
             capture_output=True,
             text=True,
@@ -176,12 +215,187 @@ def run_codex(prompt, stdin_text):
             raise RuntimeError(f"codex exec failed (exit {result.returncode}): {stderr}")
 
         with open(out_path, "r") as f:
-            return f.read().strip()
+            output_text = f.read().strip()
+
+        usage = _parse_usage_from_jsonl(result.stdout)
+        return output_text, usage
     finally:
         try:
             os.unlink(out_path)
         except OSError:
             pass
+
+
+def run_codex_with_images(prompt, stdin_text, image_paths, search=False):
+    """Run codex exec with --image flags and stdin, return (output_text, usage_dict)."""
+    codex_path = shutil.which("codex")
+    if not codex_path:
+        raise RuntimeError("codex CLI not found on PATH")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as out_file:
+        out_path = out_file.name
+
+    try:
+        cmd = [
+            codex_path, "exec",
+            "--skip-git-repo-check",
+            "--json",
+            "--ephemeral",
+            "-s", "read-only",
+            "-o", out_path,
+            *LEAN_FLAGS,
+        ]
+        if search:
+            cmd += ["-c", 'web_search="live"']
+        if image_paths:
+            cmd += ["--image", ",".join(image_paths)]
+        cmd.append(prompt)
+
+        result = subprocess.run(
+            cmd,
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            raise RuntimeError(f"codex exec failed (exit {result.returncode}): {stderr}")
+
+        with open(out_path, "r") as f:
+            output_text = f.read().strip()
+
+        usage = _parse_usage_from_jsonl(result.stdout)
+        return output_text, usage
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Visual analysis helpers
+# ---------------------------------------------------------------------------
+
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 360
+
+
+def decode_frame(data_url):
+    """Decode a data:image/png;base64,... string into a PIL Image."""
+    header, b64data = data_url.split(",", 1)
+    img_bytes = base64.b64decode(b64data)
+    return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+
+def crop_frame(img, video_rect):
+    """Crop a full-tab screenshot to just the video player area."""
+    if not video_rect:
+        return img
+
+    dpr = video_rect.get("devicePixelRatio", 1)
+    x = int(video_rect["x"] * dpr)
+    y = int(video_rect["y"] * dpr)
+    w = int(video_rect["width"] * dpr)
+    h = int(video_rect["height"] * dpr)
+
+    img_w, img_h = img.size
+    x = max(0, min(x, img_w - 1))
+    y = max(0, min(y, img_h - 1))
+    w = min(w, img_w - x)
+    h = min(h, img_h - y)
+
+    if w < 10 or h < 10:
+        return img
+
+    return img.crop((x, y, x + w, y + h))
+
+
+def frames_are_similar(img_a, img_b, threshold=0.05):
+    """Compare two PIL images for near-identity using downscaled grayscale MAD."""
+    size = (16, 16)
+    a = img_a.resize(size).convert("L")
+    b = img_b.resize(size).convert("L")
+    pixels_a = list(a.getdata())
+    pixels_b = list(b.getdata())
+    diff = sum(abs(pa - pb) for pa, pb in zip(pixels_a, pixels_b))
+    max_diff = 255 * len(pixels_a)
+    return (diff / max_diff) < threshold
+
+
+def deduplicate_frames(frames):
+    """Remove consecutive near-duplicate frames. Each frame is (timestamp, PIL Image)."""
+    if len(frames) <= 1:
+        return frames
+    result = [frames[0]]
+    for i in range(1, len(frames)):
+        if not frames_are_similar(result[-1][1], frames[i][1]):
+            result.append(frames[i])
+    return result
+
+
+def pick_grid(n):
+    """Pick (cols, rows) for a collage grid given n frames."""
+    if n <= 2:
+        return (n, 1)
+    if n <= 4:
+        return (2, 2)
+    if n <= 6:
+        return (2, 3)
+    if n <= 9:
+        return (3, 3)
+    return (2, 5)
+
+
+def build_collage(frames, start_idx=0):
+    """Build a collage image from a list of (timestamp, PIL Image) tuples.
+    Returns a PIL Image with timestamp overlays."""
+    n = len(frames)
+    cols, rows = pick_grid(n)
+
+    thumb_w, thumb_h = FRAME_WIDTH, FRAME_HEIGHT
+    collage = Image.new("RGB", (cols * thumb_w, rows * thumb_h), (20, 20, 30))
+    draw = ImageDraw.Draw(collage)
+
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 18)
+    except (OSError, IOError):
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 18)
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+
+    for i, (timestamp, img) in enumerate(frames):
+        resized = img.resize((thumb_w, thumb_h), Image.LANCZOS)
+        col = i % cols
+        row = i // cols
+        x_off = col * thumb_w
+        y_off = row * thumb_h
+        collage.paste(resized, (x_off, y_off))
+
+        label = format_time(timestamp)
+        tx, ty = x_off + 6, y_off + 4
+        draw.rectangle([tx - 2, ty - 1, tx + 72, ty + 20], fill=(0, 0, 0, 180))
+        draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
+
+    return collage
+
+
+VISUAL_ANALYZE_PROMPT = """You are given visual frames and a transcript from a YouTube video segment.
+
+Transcript ({start} to {end}):
+{transcript}
+
+The attached images are collages of video frames captured from this segment.
+Each frame has a timestamp overlay in the top-left corner showing MM:SS.
+Frames are arranged left-to-right, top-to-bottom in each collage.
+
+{task}
+
+IMPORTANT: Always respond in English, regardless of the language of the transcript.
+Be detailed and reference specific timestamps when relevant."""
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +423,11 @@ If the answer isn't in the transcript, say so.
 IMPORTANT: Always respond in English, regardless of the language of the transcript.
 
 User's question: {question}"""
+
+WEB_SEARCH_INSTRUCTION = """
+You have access to web search. Use it to look up additional context, verify claims, \
+find related information, or provide more comprehensive answers beyond what the transcript contains. \
+Cite sources when using web results."""
 
 SUMMARY_PROMPTS = {
     "detailed": """You are given a timestamped YouTube transcript on stdin.
@@ -278,7 +497,7 @@ def generate_segments():
 
     prompt = SEGMENTS_PROMPT.format(budget_line=budget_line, instructions_line=instructions_line)
     try:
-        codex_output = run_codex(prompt, transcript_text)
+        codex_output, usage = run_codex(prompt, transcript_text)
     except Exception as e:
         return jsonify({"error": f"Codex CLI failed: {e}"}), 502
 
@@ -286,6 +505,7 @@ def generate_segments():
         "extensionInput": clean_segments_line(codex_output),
         "details": codex_output,
         "title": title,
+        "usage": usage,
     })
 
 
@@ -296,6 +516,7 @@ def ask_about_video():
     question = body.get("question", "").strip()
     start_time = body.get("startTime")
     end_time = body.get("endTime")
+    web_search = body.get("webSearch", False)
 
     if not video_id:
         return jsonify({"error": "videoId is required"}), 400
@@ -310,12 +531,14 @@ def ask_about_video():
         return jsonify({"error": f"Failed to fetch transcript: {e}"}), 502
 
     prompt = ASK_PROMPT.format(question=question)
+    if web_search:
+        prompt += WEB_SEARCH_INSTRUCTION
     try:
-        answer = run_codex(prompt, transcript_text)
+        answer, usage = run_codex(prompt, transcript_text, search=web_search)
     except Exception as e:
         return jsonify({"error": f"Codex CLI failed: {e}"}), 502
 
-    return jsonify({"answer": answer, "title": title})
+    return jsonify({"answer": answer, "title": title, "usage": usage})
 
 
 @app.route("/summary", methods=["POST"])
@@ -340,11 +563,98 @@ def summarize_video():
 
     prompt = SUMMARY_PROMPTS[summary_type]
     try:
-        result = run_codex(prompt, transcript_text)
+        result, usage = run_codex(prompt, transcript_text)
     except Exception as e:
         return jsonify({"error": f"Codex CLI failed: {e}"}), 502
 
-    return jsonify({"summary": result, "title": title})
+    return jsonify({"summary": result, "title": title, "usage": usage})
+
+
+@app.route("/visual-analyze", methods=["POST"])
+def visual_analyze():
+    body = request.get_json(force=True)
+    video_id = body.get("videoId")
+    raw_frames = body.get("frames", [])
+    video_rect = body.get("videoRect")
+    start_time = body.get("startTime", 0)
+    end_time = body.get("endTime", 0)
+    do_dedup = body.get("deduplicate", True)
+    question = body.get("question")
+    web_search = body.get("webSearch", False)
+
+    if not video_id:
+        return jsonify({"error": "videoId is required"}), 400
+    if not raw_frames:
+        return jsonify({"error": "No frames provided"}), 400
+
+    try:
+        frames = []
+        for f in raw_frames:
+            img = decode_frame(f["dataUrl"])
+            img = crop_frame(img, video_rect)
+            frames.append((f["timestamp"], img))
+
+        if do_dedup:
+            before = len(frames)
+            frames = deduplicate_frames(frames)
+            app.logger.info(f"Dedup: {before} -> {len(frames)} frames")
+
+        if not frames:
+            return jsonify({"error": "All frames were duplicates — nothing to analyze."}), 400
+
+        collage_batch_size = 10
+        collages = []
+        for i in range(0, len(frames), collage_batch_size):
+            batch = frames[i:i + collage_batch_size]
+            collages.append(build_collage(batch, start_idx=i))
+
+        temp_paths = []
+        try:
+            for idx, collage_img in enumerate(collages):
+                tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                collage_img.save(tmp.name, format="JPEG", quality=85)
+                temp_paths.append(tmp.name)
+                tmp.close()
+
+            try:
+                transcript_text, title = get_transcript_text(
+                    video_id, start_time=start_time, end_time=end_time
+                )
+            except Exception:
+                transcript_text = "(Transcript not available for this segment)"
+                title = video_id
+
+            if question:
+                task = f"User's question: {question}"
+            else:
+                task = (
+                    "Provide a detailed visual analysis of this video segment. "
+                    "Describe what is shown on screen, any diagrams, code, text, "
+                    "slides, or visual elements. Note any changes between frames."
+                )
+
+            prompt = VISUAL_ANALYZE_PROMPT.format(
+                start=format_time(start_time),
+                end=format_time(end_time),
+                transcript=transcript_text,
+                task=task,
+            )
+            if web_search:
+                prompt += WEB_SEARCH_INSTRUCTION
+
+            result, usage = run_codex_with_images(prompt, transcript_text, temp_paths, search=web_search)
+        finally:
+            for p in temp_paths:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+        return jsonify({"answer": result, "title": title, "framesAnalyzed": len(frames), "usage": usage})
+
+    except Exception as e:
+        app.logger.exception("visual-analyze failed")
+        return jsonify({"error": f"Visual analysis failed: {e}"}), 500
 
 
 @app.route("/health", methods=["GET"])

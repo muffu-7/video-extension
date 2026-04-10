@@ -8,6 +8,10 @@
   let lastVideoId = null;
   let fallbackInterval = null;
 
+  function contextValid() {
+    try { return !!chrome.runtime.id; } catch { return false; }
+  }
+
   // --- Helpers ---
 
   function getVideoId() {
@@ -107,7 +111,7 @@
   // --- Load segments from storage for a given video ---
 
   function loadSegments(videoId) {
-    if (!videoId) {
+    if (!videoId || !contextValid()) {
       segments = [];
       enabled = false;
       return;
@@ -134,6 +138,7 @@
   // --- SPA navigation handling ---
 
   function onNavigate() {
+    if (!contextValid()) return;
     const videoId = getVideoId();
     if (videoId === lastVideoId) return;
     lastVideoId = videoId;
@@ -168,6 +173,20 @@
 
   // --- Message handling from popup ---
 
+  function getVideoRect() {
+    if (!video) return null;
+    const rect = video.getBoundingClientRect();
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      tabWidth: window.innerWidth,
+      tabHeight: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio || 1,
+    };
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "get-video-id") {
       sendResponse({
@@ -191,6 +210,67 @@
         currentSegmentIndex = 0;
         video.currentTime = segments[0].start;
         if (video.paused) video.play();
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message.type === "get-video-rect") {
+      sendResponse({ rect: getVideoRect() });
+      return;
+    }
+
+    if (message.type === "prepare-capture") {
+      if (!video) {
+        sendResponse({ ok: false, error: "No video element found" });
+        return;
+      }
+      video.pause();
+      sendResponse({
+        ok: true,
+        rect: getVideoRect(),
+        wasPaused: video.paused,
+        savedTime: video.currentTime,
+      });
+      return;
+    }
+
+    if (message.type === "seek-to") {
+      if (!video) {
+        sendResponse({ ok: false, error: "No video element found" });
+        return;
+      }
+      const target = message.time;
+      if (Math.abs(video.currentTime - target) < 0.1) {
+        sendResponse({ ok: true, ready: true });
+        return;
+      }
+      let responded = false;
+      const respond = () => {
+        if (responded) return;
+        responded = true;
+        video.removeEventListener("seeked", onSeeked);
+        clearTimeout(timeout);
+        sendResponse({ ok: true, ready: true });
+      };
+      const onSeeked = () => respond();
+      const timeout = setTimeout(() => {
+        if (Math.abs(video.currentTime - target) < 1) {
+          respond();
+        } else {
+          video.currentTime = target;
+          setTimeout(respond, 1000);
+        }
+      }, 3000);
+      video.addEventListener("seeked", onSeeked);
+      video.currentTime = target;
+      return true;
+    }
+
+    if (message.type === "finish-capture") {
+      if (video && typeof message.restoreTime === "number") {
+        video.currentTime = message.restoreTime;
+        if (message.wasPlaying) video.play();
       }
       sendResponse({ ok: true });
       return;

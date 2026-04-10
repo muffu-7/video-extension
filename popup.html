@@ -13,97 +13,196 @@
     </div>
 
     <div id="main-controls">
-      <div class="generate-section">
-        <label>Auto-generate</label>
-        <input
-          type="text"
-          id="instructions"
-          placeholder="e.g. focus only on Iran topics, skip market talk"
-          spellcheck="false"
-        >
-        <div class="generate-row">
-          <input
-            type="number"
-            id="max-minutes"
-            placeholder="Max min"
-            min="1"
-            max="120"
-            title="Max total runtime in minutes (optional)"
-          >
-          <button id="generate-btn">Generate Segments</button>
-        </div>
-        <p id="generate-status" class="generate-status" hidden></p>
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="transcript-tab">Transcript</button>
+        <button class="tab-btn" data-tab="visual-tab">Visual Analysis</button>
       </div>
 
-      <div class="divider"></div>
-
-      <label for="segments-input">Segments</label>
-      <textarea
-        id="segments-input"
-        placeholder="1:00-2:00, 3:00-4:00, 5:30-6:30"
-        rows="3"
-        spellcheck="false"
-      ></textarea>
-
-      <div class="actions">
-        <button id="save-btn">Save</button>
-        <div class="toggle-wrap">
-          <span class="toggle-label">Loop</span>
-          <label class="toggle">
-            <input type="checkbox" id="enabled-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <p id="status" class="status"></p>
-      <p id="error" class="error" hidden></p>
-
-      <div class="divider"></div>
-
-      <div class="window-section">
-        <div class="window-header">
-          <label>Transcript window</label>
-          <button id="full-video-btn" class="small-btn">Full video</button>
-        </div>
-        <div class="range-slider">
-          <div class="range-slider-track"><div class="range-slider-fill" id="range-fill"></div></div>
-          <input type="range" id="range-min" min="0" max="100" value="0" step="1">
-          <input type="range" id="range-max" min="0" max="100" value="100" step="1">
-        </div>
-        <div class="range-labels">
-          <input type="text" id="range-start-label" value="00:00" spellcheck="false">
-          <input type="text" id="range-end-label" value="00:00" spellcheck="false">
-        </div>
-      </div>
-
-      <div class="divider"></div>
-
-      <div class="insights-section">
-        <label>Video insights</label>
-        <div class="insights-buttons">
-          <button id="btn-detailed" class="insight-btn" data-type="detailed">Detailed Summary</button>
-          <button id="btn-short" class="insight-btn" data-type="short">Short Summary</button>
-          <button id="btn-pointers" class="insight-btn" data-type="key-pointers">Key Pointers</button>
-        </div>
-      </div>
-
-      <div class="divider"></div>
-
-      <div class="ask-section">
-        <label>Ask about this video</label>
-        <div class="ask-row">
+      <!-- ===== Tab 1: Transcript (existing features) ===== -->
+      <div id="transcript-tab" class="tab-panel active">
+        <div class="generate-section">
+          <label>Auto-generate</label>
           <input
             type="text"
-            id="ask-input"
-            placeholder="e.g. What are the key arguments about Iran?"
+            id="instructions"
+            placeholder="e.g. focus only on Iran topics, skip market talk"
             spellcheck="false"
           >
-          <button id="ask-btn">Ask</button>
+          <div class="generate-row">
+            <input
+              type="number"
+              id="max-minutes"
+              placeholder="Max min"
+              min="1"
+              max="120"
+              title="Max total runtime in minutes (optional)"
+            >
+            <button id="generate-btn">Generate Segments</button>
+          </div>
+          <p id="generate-status" class="generate-status" hidden></p>
         </div>
+
+        <div class="divider"></div>
+
+        <label for="segments-input">Segments</label>
+        <textarea
+          id="segments-input"
+          placeholder="1:00-2:00, 3:00-4:00, 5:30-6:30"
+          rows="3"
+          spellcheck="false"
+        ></textarea>
+
+        <div class="actions">
+          <button id="save-btn">Save</button>
+          <div class="toggle-wrap">
+            <span class="toggle-label">Loop</span>
+            <label class="toggle">
+              <input type="checkbox" id="enabled-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <p id="status" class="status"></p>
+        <p id="error" class="error" hidden></p>
+
+        <div class="divider"></div>
+
+        <div class="window-section">
+          <div class="window-header">
+            <label>Transcript window</label>
+            <button id="full-video-btn" class="small-btn">Full video</button>
+          </div>
+          <div class="range-slider">
+            <div class="range-slider-track"><div class="range-slider-fill" id="range-fill"></div></div>
+            <input type="range" id="range-min" min="0" max="100" value="0" step="1">
+            <input type="range" id="range-max" min="0" max="100" value="100" step="1">
+          </div>
+          <div class="range-labels">
+            <input type="text" id="range-start-label" value="00:00" spellcheck="false">
+            <input type="text" id="range-end-label" value="00:00" spellcheck="false">
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="insights-section">
+          <label>Video insights</label>
+          <div class="insights-buttons">
+            <button id="btn-detailed" class="insight-btn" data-type="detailed">Detailed Summary</button>
+            <button id="btn-short" class="insight-btn" data-type="short">Short Summary</button>
+            <button id="btn-pointers" class="insight-btn" data-type="key-pointers">Key Pointers</button>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="ask-section">
+          <label>Ask about this video</label>
+          <div class="ask-row">
+            <input
+              type="text"
+              id="ask-input"
+              placeholder="e.g. What are the key arguments about Iran?"
+              spellcheck="false"
+            >
+            <button id="ask-btn">Ask</button>
+          </div>
+          <div class="web-search-row">
+            <label class="toggle small-toggle">
+              <input type="checkbox" id="ask-search-toggle">
+              <span class="slider"></span>
+            </label>
+            <span class="web-search-label">Web search</span>
+          </div>
+        </div>
+
+        <div class="output-wrap">
+          <div id="output-box" class="output-box" hidden></div>
+          <button id="speak-btn" class="speak-btn" hidden title="Read aloud">&#x1f50a;</button>
+        </div>
+        <div id="token-usage" class="token-usage" hidden></div>
       </div>
 
-      <div id="output-box" class="output-box" hidden></div>
+      <!-- ===== Tab 2: Visual Analysis ===== -->
+      <div id="visual-tab" class="tab-panel">
+        <div class="window-section">
+          <div class="window-header">
+            <label>Capture window</label>
+            <button id="va-full-video-btn" class="small-btn">Full video</button>
+          </div>
+          <div class="range-slider">
+            <div class="range-slider-track"><div class="range-slider-fill" id="va-range-fill"></div></div>
+            <input type="range" id="va-range-min" min="0" max="100" value="0" step="1">
+            <input type="range" id="va-range-max" min="0" max="100" value="100" step="1">
+          </div>
+          <div class="range-labels">
+            <input type="text" id="va-range-start-label" value="00:00" spellcheck="false">
+            <input type="text" id="va-range-end-label" value="00:00" spellcheck="false">
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="va-settings">
+          <div class="va-setting-row">
+            <label for="va-interval">Capture interval</label>
+            <div class="va-interval-control">
+              <input type="range" id="va-interval" min="1" max="10" value="2" step="1">
+              <span id="va-interval-label">1 frame / 2s</span>
+            </div>
+          </div>
+
+          <div class="va-setting-row">
+            <label>Skip similar frames</label>
+            <label class="toggle">
+              <input type="checkbox" id="va-dedup-toggle" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="ask-section">
+          <label>Ask about the visuals (optional)</label>
+          <input
+            type="text"
+            id="va-question"
+            placeholder="e.g. What diagram is shown? What code is on screen?"
+            spellcheck="false"
+          >
+          <div class="web-search-row">
+            <label class="toggle small-toggle">
+              <input type="checkbox" id="va-search-toggle">
+              <span class="slider"></span>
+            </label>
+            <span class="web-search-label">Web search</span>
+          </div>
+        </div>
+
+        <div class="va-capture-row">
+          <button id="va-capture-btn">Capture &amp; Analyze</button>
+        </div>
+
+        <div id="va-progress" class="va-progress" hidden>
+          <div class="va-progress-bar"><div class="va-progress-fill" id="va-progress-fill"></div></div>
+          <p id="va-progress-text" class="va-progress-text"></p>
+        </div>
+
+        <p id="va-warning" class="va-warning" hidden>Keep this tab visible during capture.</p>
+
+        <div class="output-wrap">
+          <div id="va-output-box" class="output-box" hidden></div>
+          <button id="va-speak-btn" class="speak-btn" hidden title="Read aloud">&#x1f50a;</button>
+        </div>
+        <div id="va-token-usage" class="token-usage" hidden></div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <div class="clear-data-row">
+      <button id="clear-data-btn" class="clear-data-btn">Clear all saved data</button>
     </div>
   </div>
   <script src="popup.js"></script>

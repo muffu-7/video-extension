@@ -433,6 +433,74 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* --- Speak button --- */
+
+.output-wrap {
+  position: relative;
+}
+
+.speak-btn {
+  position: absolute;
+  top: 18px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #aaa;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, color 0.2s;
+  z-index: 1;
+}
+
+.speak-btn:hover {
+  background: rgba(233, 69, 96, 0.3);
+  color: #fff;
+}
+
+.speak-btn.speaking {
+  background: #e94560;
+  color: #fff;
+}
+
+/* --- Web search toggle --- */
+
+.web-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.web-search-label {
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.small-toggle {
+  width: 30px;
+  height: 16px;
+}
+
+.small-toggle .slider::before {
+  width: 12px;
+  height: 12px;
+  left: 2px;
+  bottom: 2px;
+}
+
+.small-toggle input:checked + .slider::before {
+  transform: translateX(14px);
+}
+
 /* --- Shared output box --- */
 
 .output-box {
@@ -455,6 +523,222 @@ button:disabled {
 
 .output-box.error {
   color: #ff6b6b;
+}
+
+/* --- Tabs --- */
+
+.tab-bar {
+  display: flex;
+  gap: 0;
+  margin-bottom: 14px;
+  border-bottom: 2px solid #2a2a4a;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 8px 0;
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  color: #777;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  margin-bottom: -2px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tab-btn:hover {
+  color: #ccc;
+  background: transparent;
+}
+
+.tab-btn.active {
+  color: #e94560;
+  border-bottom-color: #e94560;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* --- Visual Analysis --- */
+
+.va-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.va-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.va-setting-row > label:first-child {
+  font-size: 11px;
+  font-weight: 500;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.va-interval-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.va-interval-control input[type="range"] {
+  width: 90px;
+  accent-color: #e94560;
+  height: 4px;
+}
+
+#va-interval-label {
+  font-size: 11px;
+  color: #7ec8e3;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  min-width: 85px;
+  text-align: right;
+}
+
+#va-question {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #16213e;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+  margin-top: 6px;
+  transition: border-color 0.2s;
+}
+
+#va-question:focus {
+  border-color: #e94560;
+}
+
+#va-question::placeholder {
+  color: #555;
+  font-size: 11px;
+}
+
+.va-capture-row {
+  margin-top: 14px;
+}
+
+.va-capture-row button {
+  width: 100%;
+  padding: 9px 0;
+  font-size: 13px;
+}
+
+.va-progress {
+  margin-top: 12px;
+}
+
+.va-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: #333;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.va-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #e94560;
+  border-radius: 2px;
+  transition: width 0.2s;
+}
+
+.va-progress-text {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #7ec8e3;
+}
+
+.va-warning {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #f0a040;
+  text-align: center;
+}
+
+/* --- Token usage display --- */
+
+.token-usage {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #0d1a2d;
+  border: 1px solid #2a2a4a;
+  font-size: 11px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  color: #888;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.token-usage .token-label {
+  color: #666;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+}
+
+.token-usage .token-value {
+  color: #7ec8e3;
+}
+
+.token-usage .token-cost {
+  color: #f0a040;
+}
+
+/* --- Clear data button --- */
+
+.clear-data-row {
+  text-align: center;
+  margin-top: 2px;
+}
+
+.clear-data-btn {
+  padding: 4px 14px;
+  font-size: 10px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid #333;
+  color: #666;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.clear-data-btn:hover {
+  background: #ff4444;
+  border-color: #ff4444;
+  color: #fff;
+}
+
+.clear-data-btn.confirm {
+  background: #ff4444;
+  border-color: #ff4444;
+  color: #fff;
 }
 
 .notice {

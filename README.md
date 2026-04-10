@@ -1,6 +1,6 @@
 # YouTube Segment Looper
 
-A Chrome/Edge extension that loops selected time segments on YouTube videos endlessly, with AI-powered segment generation, video summaries, key pointers, and a Q&A feature — all running locally via the Codex CLI.
+A Chrome/Edge extension that loops selected time segments on YouTube videos endlessly, with AI-powered segment generation, video summaries, key pointers, Q&A, and visual analysis — all running locally via the Codex CLI.
 
 ## What it does
 
@@ -10,7 +10,14 @@ A Chrome/Edge extension that loops selected time segments on YouTube videos endl
   - **Detailed Summary** — comprehensive, section-by-section breakdown of the entire video
   - **Short Summary** — 3-5 sentence overview of the key takeaways
   - **Key Pointers** — numbered list of every important point with timestamps and descriptions
-- **Ask about the video** — Type any question about the video content and get an answer based on the transcript, without watching the whole thing.
+- **Ask about the video** — Type any question about the video content and get an answer based on the transcript, without watching the whole thing. Optionally enable **web search** to let the LLM look up additional context, verify claims, or find related information beyond the transcript.
+- **Visual analysis** — Capture screenshots of a video segment, collage them with transcript context, and send to a vision-capable LLM. Useful for analyzing diagrams, code on screen, slides, or anything not captured by captions alone. Features:
+  - Seek-and-capture (no real-time playback required — frames are grabbed by seeking through the video)
+  - Configurable capture interval (1–10 seconds, default 1 frame every 2s)
+  - Automatic cropping to the video player (excludes YouTube UI chrome)
+  - Frame deduplication (skips near-identical consecutive frames to save cost)
+  - Frames are collaged into grids with timestamp overlays and sent alongside the transcript to `codex exec --image`
+  - Optional **web search** toggle to enrich answers with live internet context
 - **Per-video storage** — Segments are saved per YouTube video ID and persist across browser sessions.
 - **Transcript caching** — Transcripts are cached locally per video ID so repeat requests for the same video don't re-download. Cache auto-cleans entries older than 7 days.
 - **Smart seek handling** — If you manually seek into a saved segment, playback continues from there. If you seek outside all segments, it jumps to the next one.
@@ -20,17 +27,19 @@ A Chrome/Edge extension that loops selected time segments on YouTube videos endl
 ```
 Chrome Extension (popup + content script)
     |
-    |  POST /generate-segments
-    |  POST /summary
-    |  POST /ask
+    |  POST /generate-segments      (transcript-based)
+    |  POST /summary                (transcript-based)
+    |  POST /ask                    (transcript-based)
+    |  POST /visual-analyze         (screenshots + transcript)
     v
 Local Flask Server (server.py :5055)
     |
     |  1. Check transcript cache (~/.cache/video-extension/transcripts/)
     |  2. If not cached, fetch from youtube-transcript.io
-    |  3. Pipe transcript via stdin to codex exec
+    |  3. For visual analysis: decode frames, crop, dedup, build collages
+    |  4. Pipe transcript via stdin + collage images via --image to codex exec
     v
-Codex CLI --> OpenAI LLM --> segments / summary / answer back to extension
+Codex CLI --> OpenAI LLM --> segments / summary / answer / visual analysis back to extension
 ```
 
 ## File structure
@@ -44,7 +53,7 @@ video-extension/
 ├── popup.css            # Dark theme styling
 ├── server.py            # Local Flask service — transcript fetching, caching, Codex CLI
 ├── fetch_transcript.py  # Standalone transcript download script
-├── requirements.txt     # Python dependencies (flask, flask-cors, python-dotenv)
+├── requirements.txt     # Python dependencies (flask, flask-cors, python-dotenv, Pillow)
 ├── .env.example         # Environment variable template
 ├── .gitignore
 └── icons/
@@ -129,8 +138,24 @@ The video jumps between those segments endlessly.
 
 1. Click the extension icon on a YouTube video
 2. Type your question in the "Ask about this video" field
-3. Press **Enter** or click **Ask**
-4. The answer appears in the output box, based on the transcript
+3. (Optional) Toggle **Web search** to let the LLM search the internet for additional context
+4. Press **Enter** or click **Ask**
+5. The answer appears in the output box, based on the transcript (and web results when enabled)
+
+### Visual analysis
+
+1. Click the extension icon on a YouTube video
+2. Switch to the **Visual Analysis** tab
+3. Set the time window using the slider or type exact times (defaults to ±30s around current position)
+4. Adjust the capture interval if needed (default: 1 frame every 2 seconds)
+5. (Optional) Toggle "Skip similar frames" to deduplicate static scenes
+6. (Optional) Type a question like "What diagram is shown at 1:15?"
+7. (Optional) Toggle **Web search** to let the LLM search the internet for additional context
+8. Click **Capture & Analyze**
+9. Keep the tab visible while frames are captured (the video scrubs through the window automatically)
+10. The result appears in the output box once the LLM responds
+
+The extension pauses the video, seeks frame-by-frame, takes a screenshot at each position, then restores your original playback position. Frames are cropped to just the video player, collaged into grids of up to 10, overlaid with timestamps, and sent alongside the transcript to the Codex CLI's `--image` flag for vision model analysis.
 
 ## Keeping the server running
 
@@ -235,10 +260,36 @@ Answers a question about the video based on its transcript.
 
 ```json
 // Request
-{ "videoId": "dQw4w9WgXcQ", "question": "What is this song about?" }
+{ "videoId": "dQw4w9WgXcQ", "question": "What is this song about?", "webSearch": false }
 
 // Response
 { "answer": "It's about promising unconditional love...", "title": "..." }
+```
+
+When `webSearch` is `true`, the server passes `--search` to the Codex CLI for live web search and appends an instruction to the prompt encouraging the LLM to cite web sources.
+
+### `POST /visual-analyze`
+
+Captures video frames as screenshots, builds collages, and sends them with the transcript to a vision-capable LLM.
+
+```json
+// Request
+{
+  "videoId": "dQw4w9WgXcQ",
+  "frames": [
+    { "timestamp": 60, "dataUrl": "data:image/jpeg;base64,..." },
+    { "timestamp": 62, "dataUrl": "data:image/jpeg;base64,..." }
+  ],
+  "videoRect": { "x": 0, "y": 56, "width": 854, "height": 480, "tabWidth": 1280, "tabHeight": 800, "devicePixelRatio": 2 },
+  "startTime": 60,
+  "endTime": 120,
+  "deduplicate": true,
+  "question": "What diagram is shown at 1:15?",
+  "webSearch": false
+}
+
+// Response
+{ "answer": "The diagram shows a three-layer architecture...", "title": "...", "framesAnalyzed": 12 }
 ```
 
 ### `GET /health`
@@ -256,6 +307,8 @@ Returns `{ "status": "ok" }` if the server is running.
 ## Limitations
 
 - Only works on YouTube in the desktop browser (no mobile, no other video sites)
-- The local server must be running for AI features (segment generation, summaries, Q&A)
+- The local server must be running for AI features (segment generation, summaries, Q&A, visual analysis)
 - Codex CLI must be installed and authenticated
 - Transcript availability depends on the youtube-transcript.io API and whether the video has captions
+- Visual analysis requires the tab to stay visible and focused during frame capture
+- Each collage image sent to the LLM must be under 5 MB (the server saves collages as JPEG at quality 85 to stay within this limit)
