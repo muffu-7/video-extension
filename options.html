@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Video Shortcuts &mdash; Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="page">
+    <header class="page-header">
+      <div class="header-left">
+        <h1>Video Shortcuts</h1>
+        <p class="subtitle">Bind keyboard keys to video player actions on YouTube.</p>
+      </div>
+      <div class="header-actions">
+        <button id="reset-btn" class="secondary-btn" title="Restore default bindings">Reset defaults</button>
+        <button id="save-btn" class="primary-btn">Save</button>
+      </div>
+    </header>
+
+    <p id="save-status" class="save-status" hidden></p>
+
+    <section class="card">
+      <div class="card-header">
+        <h2>Shortcuts</h2>
+        <button id="add-btn" class="ghost-btn">+ Add new</button>
+      </div>
+
+      <div class="list-header">
+        <span>Action</span>
+        <span>Key</span>
+        <span>Value</span>
+        <span></span>
+      </div>
+
+      <div id="rows" class="rows"></div>
+
+      <p id="empty-notice" class="empty-notice" hidden>
+        No shortcuts yet. Click <b>+ Add new</b> to create one.
+      </p>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Global settings</h2></div>
+
+      <div class="setting-row">
+        <label for="opt-enabled">Enable custom shortcuts</label>
+        <label class="toggle">
+          <input type="checkbox" id="opt-enabled">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <label for="opt-ignore-inputs">Ignore while typing in input fields</label>
+        <label class="toggle">
+          <input type="checkbox" id="opt-ignore-inputs">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <label for="opt-show-overlay">Show speed overlay on video</label>
+        <label class="toggle">
+          <input type="checkbox" id="opt-show-overlay">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <label for="opt-preferred-speed">Preferred speed (used by "Preferred speed")</label>
+        <input type="number" id="opt-preferred-speed" min="0.1" max="16" step="0.05">
+      </div>
+
+      <div class="setting-row">
+        <label for="opt-rewind-step">Default rewind step (seconds)</label>
+        <input type="number" id="opt-rewind-step" min="1" max="600" step="1">
+      </div>
+
+      <div class="setting-row">
+        <label for="opt-advance-step">Default advance step (seconds)</label>
+        <input type="number" id="opt-advance-step" min="1" max="600" step="1">
+      </div>
+
+      <div class="setting-row">
+        <label for="opt-speed-step">Speed step (for Increase/Decrease speed)</label>
+        <input type="number" id="opt-speed-step" min="0.01" max="5" step="0.01">
+      </div>
+
+      <div class="setting-row">
+        <label for="opt-volume-step">Volume step (0\u20131)</label>
+        <input type="number" id="opt-volume-step" min="0.01" max="1" step="0.01">
+      </div>
+    </section>
+
+    <footer class="page-footer">
+      <p>Changes take effect on any YouTube tab without reload. Playback keys (rewind / advance / speed / volume / pause) work during ads too.</p>
+    </footer>
+  </div>
+
+  <script src="shortcuts-defs.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

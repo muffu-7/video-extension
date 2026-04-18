@@ -44,10 +44,20 @@
   const vaSearchToggle = document.getElementById("va-search-toggle");
   const speakBtn = document.getElementById("speak-btn");
   const vaSpeakBtn = document.getElementById("va-speak-btn");
+  const shortsToggle = document.getElementById("shorts-toggle");
+  const shortsPageStatus = document.getElementById("shorts-page-status");
+  const shortcutsEnabledToggle = document.getElementById("shortcuts-enabled-toggle");
+  const shortcutsIgnoreInputsToggle = document.getElementById("shortcuts-ignore-inputs-toggle");
+  const shortcutsOverlayToggle = document.getElementById("shortcuts-overlay-toggle");
+  const shortcutsSummary = document.getElementById("shortcuts-summary");
+  const openShortcutsOptionsBtn = document.getElementById("open-shortcuts-options");
+  const SHORTCUTS_STORAGE_KEY = (self.VSC_SHORTCUTS && self.VSC_SHORTCUTS.STORAGE_KEY) || "custom_shortcuts";
 
   let currentVideoId = null;
   let videoDuration = 0;
   let captureAborted = false;
+  let currentIsShortsPage = false;
+  const SHORTS_AUTO_SCROLL_KEY = "shorts_auto_scroll";
 
   function formatTokenCount(n) {
     if (n == null) return "—";
@@ -99,6 +109,24 @@
 
   function storageKey(videoId) {
     return `segments_${videoId}`;
+  }
+
+  function updateShortsUi() {
+    shortsToggle.disabled = !currentIsShortsPage;
+    if (currentIsShortsPage) {
+      shortsPageStatus.textContent = "Current page: YouTube Short";
+      shortsPageStatus.className = "shorts-status active";
+    } else {
+      shortsPageStatus.textContent = "Open a YouTube Short to enable this toggle.";
+      shortsPageStatus.className = "shorts-status";
+    }
+  }
+
+  function restoreShortsSettings() {
+    chrome.storage.local.get(SHORTS_AUTO_SCROLL_KEY, (result) => {
+      shortsToggle.checked = result[SHORTS_AUTO_SCROLL_KEY] === true;
+      updateShortsUi();
+    });
   }
 
   // --- Time parsing ---
@@ -511,6 +539,7 @@
     }
 
     currentVideoId = resp.videoId;
+    currentIsShortsPage = resp.isShorts === true;
     noVideoEl.hidden = true;
     mainControls.hidden = false;
 
@@ -530,6 +559,7 @@
     restoreOutput();
     restoreVaOutput();
     restoreJobs();
+    restoreShortsSettings();
   }
 
   // --- Save ---
@@ -633,6 +663,73 @@
       });
     });
   });
+
+  shortsToggle.addEventListener("change", () => {
+    chrome.storage.local.set({ [SHORTS_AUTO_SCROLL_KEY]: shortsToggle.checked });
+  });
+
+  // --- Shortcuts tab ---
+
+  function applyShortcutsSettingsToUi(settings) {
+    const defs = self.VSC_SHORTCUTS;
+    const norm = defs ? defs.normalizeSettings(settings) : (settings || {});
+    shortcutsEnabledToggle.checked = norm.enabled !== false;
+    shortcutsIgnoreInputsToggle.checked = norm.ignoreInInputs !== false;
+    shortcutsOverlayToggle.checked = norm.showSpeedOverlay !== false;
+    const count = Array.isArray(norm.bindings) ? norm.bindings.length : 0;
+    if (count === 0) {
+      shortcutsSummary.textContent = "No shortcuts configured yet.";
+    } else {
+      shortcutsSummary.textContent = `${count} shortcut${count === 1 ? "" : "s"} configured.`;
+    }
+  }
+
+  function loadShortcutsSettings() {
+    chrome.storage.local.get(SHORTCUTS_STORAGE_KEY, (result) => {
+      applyShortcutsSettingsToUi(result[SHORTCUTS_STORAGE_KEY]);
+    });
+  }
+
+  function updateShortcutsSetting(patch) {
+    chrome.storage.local.get(SHORTCUTS_STORAGE_KEY, (result) => {
+      const defs = self.VSC_SHORTCUTS;
+      const current = defs
+        ? defs.normalizeSettings(result[SHORTCUTS_STORAGE_KEY])
+        : Object.assign({}, result[SHORTCUTS_STORAGE_KEY] || {});
+      const next = Object.assign({}, current, patch);
+      chrome.storage.local.set({ [SHORTCUTS_STORAGE_KEY]: next });
+    });
+  }
+
+  shortcutsEnabledToggle.addEventListener("change", () => {
+    updateShortcutsSetting({ enabled: shortcutsEnabledToggle.checked });
+  });
+
+  shortcutsIgnoreInputsToggle.addEventListener("change", () => {
+    updateShortcutsSetting({ ignoreInInputs: shortcutsIgnoreInputsToggle.checked });
+  });
+
+  shortcutsOverlayToggle.addEventListener("change", () => {
+    updateShortcutsSetting({ showSpeedOverlay: shortcutsOverlayToggle.checked });
+  });
+
+  openShortcutsOptionsBtn.addEventListener("click", () => {
+    if (chrome.runtime && chrome.runtime.openOptionsPage) {
+      chrome.runtime.openOptionsPage();
+    } else {
+      chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
+    }
+    window.close();
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes[SHORTCUTS_STORAGE_KEY]) {
+      applyShortcutsSettingsToUi(changes[SHORTCUTS_STORAGE_KEY].newValue);
+    }
+  });
+
+  loadShortcutsSettings();
 
   // --- Tab switching ---
 
@@ -890,6 +987,9 @@
       vaOutputBox.hidden = true;
       vaOutputBox.textContent = "";
       vaTokenUsageEl.hidden = true;
+      shortsToggle.checked = false;
+      updateShortsUi();
+      applyShortcutsSettingsToUi(null);
       generateStatusEl.hidden = true;
       generateBtn.disabled = false;
       askBtn.disabled = false;

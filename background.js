@@ -7,6 +7,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(() => sendResponse({ done: false }));
     return true;
   }
+  if (msg.type === "open-options") {
+    chrome.runtime.openOptionsPage(() => {
+      void chrome.runtime.lastError;
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
 });
 
 async function handleServerRequest({ endpoint, videoId, body }) {

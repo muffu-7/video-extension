@@ -16,6 +16,8 @@
       <div class="tab-bar">
         <button class="tab-btn active" data-tab="transcript-tab">Transcript</button>
         <button class="tab-btn" data-tab="visual-tab">Visual Analysis</button>
+        <button class="tab-btn" data-tab="shorts-tab">Shorts</button>
+        <button class="tab-btn" data-tab="shortcuts-tab">Shortcuts</button>
       </div>
 
       <!-- ===== Tab 1: Transcript (existing features) ===== -->
@@ -198,6 +200,64 @@
         </div>
         <div id="va-token-usage" class="token-usage" hidden></div>
       </div>
+
+      <div id="shorts-tab" class="tab-panel">
+        <div class="shorts-section">
+          <label>Shorts auto-scroll</label>
+          <p id="shorts-page-status" class="shorts-status"></p>
+
+          <div class="shorts-toggle-row">
+            <span class="toggle-label">Auto-scroll</span>
+            <label class="toggle">
+              <input type="checkbox" id="shorts-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <p class="shorts-notice">
+            Automatically advances to the next Short when the current one finishes playing.
+          </p>
+        </div>
+      </div>
+
+      <!-- ===== Tab 4: Shortcuts ===== -->
+      <div id="shortcuts-tab" class="tab-panel">
+        <div class="shortcuts-section">
+          <label>Custom keyboard shortcuts</label>
+
+          <div class="shortcuts-toggle-row">
+            <span class="toggle-label">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="shortcuts-enabled-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="shortcuts-toggle-row">
+            <span class="toggle-label">Ignore in input fields</span>
+            <label class="toggle">
+              <input type="checkbox" id="shortcuts-ignore-inputs-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="shortcuts-toggle-row">
+            <span class="toggle-label">Speed overlay on video</span>
+            <label class="toggle">
+              <input type="checkbox" id="shortcuts-overlay-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <p id="shortcuts-summary" class="shorts-notice">No shortcuts configured yet.</p>
+
+          <button id="open-shortcuts-options" class="primary-btn-block">Open shortcut settings</button>
+
+          <p class="shorts-notice subtle">
+            Playback keys (rewind, advance, speed, volume, pause) also work while a YouTube ad is playing.
+          </p>
+        </div>
+      </div>
     </div>
 
     <div class="divider"></div>
@@ -205,6 +265,7 @@
       <button id="clear-data-btn" class="clear-data-btn">Clear all saved data</button>
     </div>
   </div>
+  <script src="shortcuts-defs.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
