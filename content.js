@@ -404,6 +404,74 @@
     }
   });
 
+  // --- Active video resolution (for shortcut dispatch) ---
+  //
+  // The cached `video` variable is tied to the main watch/Shorts player and
+  // drives segment loop enforcement + the speed overlay.  For keyboard
+  // shortcuts we want a broader target so actions also work on Shorts that
+  // swapped in mid-scroll and on transient hover-preview videos shown on
+  // home/search pages.
+  //
+  // Resolution order used by getActiveVideo():
+  //   1. The video the mouse most recently moved over, if still attached and visible.
+  //   2. The largest playing + visible video in the viewport.
+  //   3. The largest visible video in the viewport.
+  //   4. The cached main-player `video` if still attached.
+  //   5. The first connected <video> we can find.
+
+  let lastHoveredVideo = null;
+
+  function isElementVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 20 || rect.height < 20) return false;
+    if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
+    if (rect.right < 0 || rect.left > window.innerWidth) return false;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === "hidden" || cs.display === "none" || Number(cs.opacity) === 0) {
+      return false;
+    }
+    return true;
+  }
+
+  function largestByArea(videos) {
+    let best = null;
+    let bestArea = -1;
+    for (const v of videos) {
+      const r = v.getBoundingClientRect();
+      const a = r.width * r.height;
+      if (a > bestArea) { best = v; bestArea = a; }
+    }
+    return best;
+  }
+
+  function getActiveVideo() {
+    if (lastHoveredVideo && lastHoveredVideo.isConnected && isElementVisible(lastHoveredVideo)) {
+      return lastHoveredVideo;
+    }
+    const all = Array.from(document.querySelectorAll("video")).filter((v) => v.isConnected);
+    if (all.length === 0) {
+      return (video && video.isConnected) ? video : null;
+    }
+    const playingVisible = all.filter((v) => !v.paused && !v.ended && v.readyState >= 2 && isElementVisible(v));
+    if (playingVisible.length) return largestByArea(playingVisible);
+    const visible = all.filter(isElementVisible);
+    if (visible.length) return largestByArea(visible);
+    if (video && video.isConnected) return video;
+    return all[0];
+  }
+
+  // Capture-phase mouseover so we see events even if the page stops propagation.
+  // Fast path: only inspect when the cursor is on or inside a <video>.  A naive
+  // `querySelector("video")` fallback would scan the whole document on every
+  // mouse move over unrelated elements, which is expensive on YouTube's DOM.
+  document.addEventListener("mouseover", (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    const v = t.tagName === "VIDEO" ? t : t.closest("video");
+    if (v && v.isConnected) lastHoveredVideo = v;
+  }, true);
+
   // --- Custom keyboard shortcuts ---
 
   const SC = self.VSC_SHORTCUTS;
@@ -453,70 +521,83 @@
 
   const actionHandlers = {
     "play-pause": () => {
-      if (!video) return;
-      if (video.paused) video.play(); else video.pause();
+      const v = getActiveVideo();
+      if (!v) return;
+      if (v.paused) v.play().catch(() => {}); else v.pause();
     },
     "rewind": (b) => {
-      if (!video) return;
+      const v = getActiveVideo();
+      if (!v) return;
       const step = Number.isFinite(b.value) ? b.value : shortcutSettings.rewindStep;
-      video.currentTime = Math.max(0, video.currentTime - step);
+      v.currentTime = Math.max(0, v.currentTime - step);
     },
     "advance": (b) => {
-      if (!video) return;
+      const v = getActiveVideo();
+      if (!v) return;
       const step = Number.isFinite(b.value) ? b.value : shortcutSettings.advanceStep;
-      const dur = video.duration || Infinity;
-      video.currentTime = Math.min(dur, video.currentTime + step);
+      const dur = v.duration || Infinity;
+      v.currentTime = Math.min(dur, v.currentTime + step);
     },
     "frame-forward": () => {
-      if (!video) return;
-      if (!video.paused) video.pause();
-      video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 1 / 30);
+      const v = getActiveVideo();
+      if (!v) return;
+      if (!v.paused) v.pause();
+      v.currentTime = Math.min(v.duration || Infinity, v.currentTime + 1 / 30);
     },
     "frame-back": () => {
-      if (!video) return;
-      if (!video.paused) video.pause();
-      video.currentTime = Math.max(0, video.currentTime - 1 / 30);
+      const v = getActiveVideo();
+      if (!v) return;
+      if (!v.paused) v.pause();
+      v.currentTime = Math.max(0, v.currentTime - 1 / 30);
     },
     "speed-down": (b) => {
-      if (!video) return;
+      const v = getActiveVideo();
+      if (!v) return;
       const step = Number.isFinite(b && b.value) ? b.value : shortcutSettings.speedStep;
-      video.playbackRate = clampRate(video.playbackRate - step);
+      v.playbackRate = clampRate(v.playbackRate - step);
     },
     "speed-up": (b) => {
-      if (!video) return;
+      const v = getActiveVideo();
+      if (!v) return;
       const step = Number.isFinite(b && b.value) ? b.value : shortcutSettings.speedStep;
-      video.playbackRate = clampRate(video.playbackRate + step);
+      v.playbackRate = clampRate(v.playbackRate + step);
     },
     "speed-reset": (b) => {
-      if (!video) return;
+      const v = getActiveVideo();
+      if (!v) return;
       const target = Number.isFinite(b.value) ? b.value : 1;
-      video.playbackRate = clampRate(target);
+      v.playbackRate = clampRate(target);
     },
     "speed-preferred": (b) => {
-      if (!video) return;
+      const v = getActiveVideo();
+      if (!v) return;
       const target = Number.isFinite(b.value) ? b.value : shortcutSettings.preferredSpeed;
-      video.playbackRate = clampRate(target);
+      v.playbackRate = clampRate(target);
     },
     "volume-up": () => {
-      if (!video) return;
-      video.muted = false;
-      video.volume = clampVolume(video.volume + shortcutSettings.volumeStep);
+      const v = getActiveVideo();
+      if (!v) return;
+      v.muted = false;
+      v.volume = clampVolume(v.volume + shortcutSettings.volumeStep);
     },
     "volume-down": () => {
-      if (!video) return;
-      video.volume = clampVolume(video.volume - shortcutSettings.volumeStep);
+      const v = getActiveVideo();
+      if (!v) return;
+      v.volume = clampVolume(v.volume - shortcutSettings.volumeStep);
     },
     "mute": () => {
-      if (!video) return;
-      video.muted = !video.muted;
+      const v = getActiveVideo();
+      if (!v) return;
+      v.muted = !v.muted;
     },
     "fullscreen": () => {
-      if (!clickPlayerButton(".ytp-fullscreen-button")) {
-        const p = getPlayer();
-        if (!p) return;
-        if (!document.fullscreenElement) p.requestFullscreen?.();
-        else document.exitFullscreen?.();
-      }
+      const v = getActiveVideo();
+      // Prefer YouTube's own fullscreen button when acting on the main player.
+      if (v === video && clickPlayerButton(".ytp-fullscreen-button")) return;
+      const target = (v && v.closest(".html5-video-player")) || getPlayer() || v;
+      if (!target) return;
+      if (!document.fullscreenElement) target.requestFullscreen?.();
+      else document.exitFullscreen?.();
     },
     "captions": () => {
       clickPlayerButton(".ytp-subtitles-button");
