@@ -1,6 +1,6 @@
-# YouTube Segment Looper
+# YouTube Segment Looper + Shortcuts
 
-A Chrome/Edge extension that loops selected time segments on YouTube videos endlessly, with AI-powered segment generation, video summaries, key pointers, Q&A, and visual analysis — all running locally via the Codex CLI.
+A Chrome/Edge extension for power-watching YouTube. It loops selected time segments, generates AI segments and summaries, answers questions about a video, analyzes its visuals — all running locally via the Codex CLI — and gives you fully customizable keyboard shortcuts that work on regular videos, Shorts, and even the hover-preview videos on the home feed.
 
 ## What it does
 
@@ -18,6 +18,9 @@ A Chrome/Edge extension that loops selected time segments on YouTube videos endl
   - Frame deduplication (skips near-identical consecutive frames to save cost)
   - Frames are collaged into grids with timestamp overlays and sent alongside the transcript to `codex exec --image`
   - Optional **web search** toggle to enrich answers with live internet context
+- **Custom keyboard shortcuts** — Bind any key (with optional `Ctrl`/`Shift`/`Alt`/`Cmd` modifiers) to a catalog of ~25 video actions: play/pause, rewind, advance, per-binding speed steps, volume, mute, fullscreen, captions, frame step, segment navigation, markers A/B, Shorts navigation, and more. Actions work on the main YouTube player (including during ads), on Shorts as you scroll, and on the hover-preview video that plays when you mouse over a thumbnail.
+- **Speed overlay** — A small semi-transparent `1.00x` pill shown over the video player that updates live as speed changes. Toggleable from the popup, the options page, or a keyboard shortcut (default `V`).
+- **Shorts helpers** — Auto-scroll to the next Short when the current one finishes, plus bindable keys for next/previous Short (defaults: left `Shift` and `Tab`).
 - **Per-video storage** — Segments are saved per YouTube video ID and persist across browser sessions.
 - **Transcript caching** — Transcripts are cached locally per video ID so repeat requests for the same video don't re-download. Cache auto-cleans entries older than 7 days.
 - **Smart seek handling** — If you manually seek into a saved segment, playback continues from there. If you seek outside all segments, it jumps to the next one.
@@ -47,10 +50,15 @@ Codex CLI --> OpenAI LLM --> segments / summary / answer / visual analysis back 
 ```
 video-extension/
 ├── manifest.json        # Manifest V3 config
-├── content.js           # Injected into YouTube — controls the <video> element
-├── popup.html           # Extension popup UI
-├── popup.js             # Popup logic — segment parsing, server calls, storage
-├── popup.css            # Dark theme styling
+├── background.js        # Service worker — proxies requests to the local server, opens options page
+├── content.js           # Injected into YouTube — segment enforcement, video tracking, shortcut dispatcher, speed overlay
+├── shortcuts-defs.js    # Shared catalog: action list, default bindings, key matcher, formatter
+├── popup.html           # Extension popup UI (Transcript / Visual Analysis / Shorts / Shortcuts tabs)
+├── popup.js             # Popup logic — segment parsing, server calls, storage, shortcut toggles
+├── popup.css            # Dark theme styling for the popup
+├── options.html         # Full-page Shortcuts settings editor
+├── options.js           # Options-page logic — row rendering, key capture, conflict detection, save/reset
+├── options.css          # Dark theme styling for the options page
 ├── server.py            # Local Flask service — transcript fetching, caching, Codex CLI
 ├── fetch_transcript.py  # Standalone transcript download script
 ├── requirements.txt     # Python dependencies (flask, flask-cors, python-dotenv, Pillow)
@@ -123,7 +131,9 @@ The video jumps between those segments endlessly.
 2. (Optional) Type instructions like "focus on the Iran discussion"
 3. (Optional) Enter a max runtime in minutes
 4. Click **Generate Segments**
-5. The segments appear in the textarea — click **Save** to apply
+5. The segments appear in the textarea along with their total duration — click **Save** to apply
+
+The total duration is shown next to the **Segments** label and updates live as you edit the textarea, so you can see how long your looped playback will run before saving.
 
 ### Video insights
 
@@ -156,6 +166,51 @@ The video jumps between those segments endlessly.
 10. The result appears in the output box once the LLM responds
 
 The extension pauses the video, seeks frame-by-frame, takes a screenshot at each position, then restores your original playback position. Frames are cropped to just the video player, collaged into grids of up to 10, overlaid with timestamps, and sent alongside the transcript to the Codex CLI's `--image` flag for vision model analysis.
+
+### Keyboard shortcuts
+
+Shortcuts are fully customizable from a dedicated options page.
+
+**Default bindings** (edit from the **Shortcuts** tab → **Open shortcut settings**):
+
+| Key        | Action                  |
+|------------|-------------------------|
+| `A` / `P`  | Play / pause            |
+| `Q` / `W`  | Rewind 5s / Advance 5s  |
+| `Z` / `X`  | Rewind 5s / Advance 5s  |
+| `[` / `]`  | Rewind 5s / Advance 5s  |
+| `;` / `'`  | Rewind 3s / Advance 3s  |
+| `S` / `D`  | Speed down / up by 0.05 |
+| `V`        | Toggle speed overlay    |
+| `Shift`←   | Next Short              |
+| `Tab`      | Previous Short          |
+
+**Full action catalog** (available in the options page dropdown):
+
+- **Playback** — Play/pause, rewind, advance, seek to start/end, frame step backward/forward, preferred speed, reset speed, speed up, speed down
+- **Audio** — Volume up, volume down, toggle mute
+- **Display** — Toggle fullscreen, toggle theater mode, toggle mini-player, toggle captions, toggle speed overlay
+- **Segments** — Next segment, previous segment, toggle loop, set marker A, set marker B, jump to marker A, jump to marker B
+- **Shorts** — Next Short, previous Short
+
+**Tips:**
+
+- Each rewind/advance/speed binding can carry its own step value (e.g. `Q` = 5s, `;` = 3s). Leave the value blank to use the global default.
+- Bindings use `event.code` internally so they survive across keyboard layouts, but show the human-readable key in the UI.
+- Duplicate combinations are flagged with a red border in the options page and block saving until resolved.
+- Shortcuts are ignored while you're typing in a text field or `contenteditable` element (toggleable).
+- Playback-related shortcuts target whichever video is "active" — the one you're hovering, failing that the one that's currently playing and visible, failing that the biggest visible one. So the same keys work on the main player, on Shorts, and on hover-preview videos.
+- Playback shortcuts continue to work while a YouTube ad is playing.
+- Segment/marker shortcuts always target the main YouTube player.
+- All settings (bindings, toggles, steps) are stored in `chrome.storage.local` and persist across browser restarts and extension reloads. Reinstalling the extension or explicitly clicking **Clear all data** wipes them.
+
+### Speed overlay
+
+A small `1.00x` pill is rendered in the top-left of the video player and updates live when you change playback speed. It's low-opacity by default and pointer-events-none, so it never blocks clicks. Toggle it from:
+
+- **Popup** → Shortcuts tab → *Speed overlay on video*
+- **Options page** → *Show speed overlay on video*
+- Keyboard shortcut — default `V`
 
 ## Keeping the server running
 
@@ -238,8 +293,16 @@ Fetches the transcript and returns AI-extracted segments.
 { "videoId": "dQw4w9WgXcQ", "maxMinutes": 10, "instructions": "skip intros" }
 
 // Response
-{ "extensionInput": "0:18-0:56, 1:00-1:38", "details": "...", "title": "..." }
+{
+  "extensionInput": "0:18-0:56, 1:00-1:38",
+  "details": "...",
+  "title": "...",
+  "totalSeconds": 76,
+  "totalFormatted": "1:16"
+}
 ```
+
+`totalSeconds` and `totalFormatted` are the summed duration of the returned segments; the popup displays this next to the Segments label so you can see at a glance how long the looped playback will be.
 
 ### `POST /summary`
 
@@ -304,10 +367,20 @@ Returns `{ "status": "ok" }` if the server is running.
 - **Manual seeking** — If you seek into a segment, playback continues from there. If you seek outside all segments, it jumps to the start of the next segment.
 - **Playback speed** — No special handling needed; `timeupdate` fires based on real playback time regardless of speed.
 
+## Storage and privacy
+
+All extension state is kept in `chrome.storage.local`:
+
+- Per-video segments (`segments_<videoId>`) and global loop toggle
+- Shortcut settings: bindings, global steps, speed overlay preference, markers A/B
+- Transcript API key override (if set)
+
+Nothing leaves your machine unless you invoke an AI feature, in which case the transcript (and, for visual analysis, the cropped frame collages) is sent to the Codex CLI running locally, which in turn calls your configured OpenAI account. Clearing extension data (Shorts tab → **Clear all data**) wipes segments and shortcut settings.
+
 ## Limitations
 
-- Only works on YouTube in the desktop browser (no mobile, no other video sites)
-- The local server must be running for AI features (segment generation, summaries, Q&A, visual analysis)
+- Only works on YouTube in the desktop browser (no mobile, no other video sites). Keyboard shortcuts target any `<video>` element found on a YouTube page but the extension is not injected on other domains.
+- The local server must be running for AI features (segment generation, summaries, Q&A, visual analysis). It is **not** required for manual segments, keyboard shortcuts, or the speed overlay.
 - Codex CLI must be installed and authenticated
 - Transcript availability depends on the youtube-transcript.io API and whether the video has captions
 - Visual analysis requires the tab to stay visible and focused during frame capture

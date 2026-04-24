@@ -471,6 +471,55 @@ def clean_segments_line(raw):
     return raw.split("\n")[0].strip().strip("`") if raw else None
 
 
+def _parse_timestamp_to_seconds(token):
+    """Parse a timestamp like '1:23', '01:02:03', or '90' into seconds."""
+    token = token.strip()
+    if not token:
+        return None
+    if ":" not in token:
+        try:
+            return float(token)
+        except ValueError:
+            return None
+    parts = token.split(":")
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    return None
+
+
+def _format_duration(seconds):
+    s = int(round(seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m}:{sec:02d}"
+
+
+def compute_segments_total(segments_line):
+    """Parse a 'start-end, start-end' string and return (total_seconds, formatted)."""
+    if not segments_line:
+        return 0, "0:00"
+    total = 0.0
+    for piece in segments_line.split(","):
+        piece = piece.strip()
+        if not piece or "-" not in piece:
+            continue
+        start_str, _, end_str = piece.partition("-")
+        start = _parse_timestamp_to_seconds(start_str)
+        end = _parse_timestamp_to_seconds(end_str)
+        if start is None or end is None or end <= start:
+            continue
+        total += end - start
+    return total, _format_duration(total)
+
+
 @app.route("/generate-segments", methods=["POST"])
 def generate_segments():
     body = request.get_json(force=True)
@@ -501,11 +550,16 @@ def generate_segments():
     except Exception as e:
         return jsonify({"error": f"Codex CLI failed: {e}"}), 502
 
+    segments_line = clean_segments_line(codex_output)
+    total_seconds, total_formatted = compute_segments_total(segments_line)
+
     return jsonify({
-        "extensionInput": clean_segments_line(codex_output),
+        "extensionInput": segments_line,
         "details": codex_output,
         "title": title,
         "usage": usage,
+        "totalSeconds": total_seconds,
+        "totalFormatted": total_formatted,
     })
 
 

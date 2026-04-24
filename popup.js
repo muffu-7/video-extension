@@ -10,6 +10,7 @@
   const maxMinutesInput = document.getElementById("max-minutes");
   const instructionsInput = document.getElementById("instructions");
   const generateStatusEl = document.getElementById("generate-status");
+  const segmentsTotalEl = document.getElementById("segments-total");
   const askInput = document.getElementById("ask-input");
   const askBtn = document.getElementById("ask-btn");
   const outputBox = document.getElementById("output-box");
@@ -167,6 +168,39 @@
       return { error: "Enter at least one segment." };
     }
     return { segments };
+  }
+
+  function formatDuration(totalSeconds) {
+    const s = Math.max(0, Math.round(totalSeconds));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    if (h > 0) return `${h}:${pad(m)}:${pad(sec)}`;
+    return `${m}:${pad(sec)}`;
+  }
+
+  function updateSegmentsTotal(rawOverride) {
+    if (!segmentsTotalEl) return;
+    const raw = (rawOverride !== undefined ? rawOverride : segmentsInput.value).trim();
+    if (!raw) {
+      segmentsTotalEl.hidden = true;
+      segmentsTotalEl.textContent = "";
+      segmentsTotalEl.className = "segments-total";
+      return;
+    }
+    const result = parseSegments(raw);
+    if (result.error) {
+      segmentsTotalEl.hidden = false;
+      segmentsTotalEl.className = "segments-total error";
+      segmentsTotalEl.textContent = "Invalid segments";
+      return;
+    }
+    const total = result.segments.reduce((acc, s) => acc + (s.end - s.start), 0);
+    const count = result.segments.length;
+    segmentsTotalEl.hidden = false;
+    segmentsTotalEl.className = "segments-total";
+    segmentsTotalEl.textContent = `Total: ${formatDuration(total)} (${count} segment${count === 1 ? "" : "s"})`;
   }
 
   // --- Status / error display ---
@@ -435,6 +469,14 @@
         const data = job.result;
         if (data.extensionInput) {
           segmentsInput.value = data.extensionInput;
+          if (data.totalFormatted && segmentsTotalEl) {
+            segmentsTotalEl.hidden = false;
+            segmentsTotalEl.className = "segments-total";
+            const count = data.extensionInput.split(",").filter((p) => p.trim()).length;
+            segmentsTotalEl.textContent = `Total: ${data.totalFormatted} (${count} segment${count === 1 ? "" : "s"})`;
+          } else {
+            updateSegmentsTotal();
+          }
           generateStatusEl.textContent = "Segments generated \u2014 hit Save to apply.";
         } else {
           generateStatusEl.textContent = "LLM returned no segments. Try again.";
@@ -554,6 +596,7 @@
         enabledToggle.checked = data.enabled !== false;
       }
       updateStatus(data);
+      updateSegmentsTotal();
     });
 
     restoreOutput();
@@ -561,6 +604,8 @@
     restoreJobs();
     restoreShortsSettings();
   }
+
+  segmentsInput.addEventListener("input", () => updateSegmentsTotal());
 
   // --- Save ---
 
@@ -980,6 +1025,7 @@
       clearDataBtn.classList.remove("confirm");
 
       segmentsInput.value = "";
+      updateSegmentsTotal();
       enabledToggle.checked = false;
       outputBox.hidden = true;
       outputBox.textContent = "";
