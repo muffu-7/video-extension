@@ -458,34 +458,159 @@ button:disabled {
   position: relative;
 }
 
+.tts-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 6px;
+}
+
+.tts-toolbar[hidden],
+.speak-btn[hidden] {
+  display: none;
+}
+
 .speak-btn {
-  position: absolute;
-  top: 18px;
-  right: 6px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #aaa;
-  font-size: 14px;
+  flex: 1;
+  min-height: 30px;
+  padding: 7px 10px;
+  border: 1px solid #34345f;
+  border-radius: 6px;
+  background: rgba(233, 69, 96, 0.12);
+  color: #f0f0f0;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.2s, color 0.2s;
-  z-index: 1;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
 }
 
 .speak-btn:hover {
-  background: rgba(233, 69, 96, 0.3);
+  background: rgba(233, 69, 96, 0.24);
+  border-color: #e94560;
   color: #fff;
 }
 
 .speak-btn.speaking {
   background: #e94560;
+  border-color: #e94560;
   color: #fff;
+}
+
+.speak-btn.loading {
+  background: rgba(126, 200, 227, 0.22);
+  color: #7ec8e3;
+  cursor: progress;
+}
+
+.tts-engine-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+.tts-engine-label select {
+  max-width: 128px;
+  padding: 5px 6px;
+  border: 1px solid #333;
+  border-radius: 5px;
+  background: #16213e;
+  color: #d0d0d0;
+  font-size: 11px;
+  outline: none;
+}
+
+.tts-controls {
+  margin-top: 8px;
+  padding: 9px;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  background: rgba(22, 33, 62, 0.72);
+}
+
+.tts-controls.local-mode .tts-seek,
+.tts-controls.local-mode .tts-time {
+  display: none;
+}
+
+.tts-controls.local-mode .tts-main-row {
+  justify-content: flex-start;
+}
+
+.tts-status {
+  min-height: 15px;
+  margin-bottom: 7px;
+  font-size: 11px;
+  color: #7ec8e3;
+}
+
+.tts-status.error {
+  color: #ff6b6b;
+}
+
+.tts-main-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tts-play-pause {
+  width: 56px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.tts-retry {
+  width: 48px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.tts-seek {
+  flex: 1;
+  accent-color: #e94560;
+}
+
+.tts-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.tts-time {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 10px;
+  color: #aaa;
+}
+
+.tts-speed-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.tts-speed-label select {
+  padding: 2px 4px;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #16213e;
+  color: #d0d0d0;
+  font-size: 10px;
+  outline: none;
 }
 
 /* --- Web search toggle --- */

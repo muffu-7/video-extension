@@ -122,9 +122,39 @@
           </div>
         </div>
 
+        <div id="tts-toolbar" class="tts-toolbar" hidden>
+          <button id="speak-btn" class="speak-btn" hidden title="Read aloud">Read aloud</button>
+          <label class="tts-engine-label">
+            Engine
+            <select id="tts-provider">
+              <option value="gemini" selected>Gemini TTS</option>
+              <option value="local">Local browser</option>
+            </select>
+          </label>
+        </div>
         <div class="output-wrap">
           <div id="output-box" class="output-box" hidden></div>
-          <button id="speak-btn" class="speak-btn" hidden title="Read aloud">&#x1f50a;</button>
+        </div>
+        <div id="tts-controls" class="tts-controls" hidden>
+          <div id="tts-status" class="tts-status"></div>
+          <div class="tts-main-row">
+            <button id="tts-play-pause" class="tts-play-pause" disabled>Play</button>
+            <button id="tts-retry" class="tts-retry" hidden>Retry</button>
+            <input id="tts-seek" class="tts-seek" type="range" min="0" max="0" value="0" step="0.1" disabled>
+          </div>
+          <div class="tts-meta-row">
+            <span id="tts-time" class="tts-time">0:00 / 0:00</span>
+            <label class="tts-speed-label">
+              Speed
+              <select id="tts-speed">
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div id="token-usage" class="token-usage" hidden></div>
       </div>
@@ -197,9 +227,39 @@
 
         <p id="va-warning" class="va-warning" hidden>Keep this tab visible during capture.</p>
 
+        <div id="va-tts-toolbar" class="tts-toolbar" hidden>
+          <button id="va-speak-btn" class="speak-btn" hidden title="Read aloud">Read aloud</button>
+          <label class="tts-engine-label">
+            Engine
+            <select id="va-tts-provider">
+              <option value="gemini" selected>Gemini TTS</option>
+              <option value="local">Local browser</option>
+            </select>
+          </label>
+        </div>
         <div class="output-wrap">
           <div id="va-output-box" class="output-box" hidden></div>
-          <button id="va-speak-btn" class="speak-btn" hidden title="Read aloud">&#x1f50a;</button>
+        </div>
+        <div id="va-tts-controls" class="tts-controls" hidden>
+          <div id="va-tts-status" class="tts-status"></div>
+          <div class="tts-main-row">
+            <button id="va-tts-play-pause" class="tts-play-pause" disabled>Play</button>
+            <button id="va-tts-retry" class="tts-retry" hidden>Retry</button>
+            <input id="va-tts-seek" class="tts-seek" type="range" min="0" max="0" value="0" step="0.1" disabled>
+          </div>
+          <div class="tts-meta-row">
+            <span id="va-tts-time" class="tts-time">0:00 / 0:00</span>
+            <label class="tts-speed-label">
+              Speed
+              <select id="va-tts-speed">
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div id="va-token-usage" class="token-usage" hidden></div>
       </div>

@@ -11,14 +11,18 @@ import io
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 import urllib.error
+import uuid
+import wave
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
@@ -32,8 +36,16 @@ CORS(app)
 TRANSCRIPT_API_URL = "https://www.youtube-transcript.io/api/transcripts"
 CACHE_DIR = os.path.expanduser("~/.cache/video-extension/transcripts")
 CACHE_MAX_AGE_DAYS = 7
+GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+GEMINI_TTS_DEFAULT_VOICE = os.environ.get("GEMINI_TTS_VOICE", "Kore")
+GEMINI_TTS_MAX_CHARS = int(os.environ.get("GEMINI_TTS_MAX_CHARS", "15000"))
+GEMINI_TTS_CHUNK_TARGET_CHARS = int(os.environ.get("GEMINI_TTS_CHUNK_TARGET_CHARS", "2200"))
+GEMINI_TTS_CHUNK_MAX_CHARS = int(os.environ.get("GEMINI_TTS_CHUNK_MAX_CHARS", "3000"))
+GEMINI_TTS_CONCURRENCY = max(1, int(os.environ.get("GEMINI_TTS_CONCURRENCY", "1")))
+TTS_JOB_DIR = os.path.expanduser("~/.cache/video-extension/tts")
 
 os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(TTS_JOB_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Transcript fetching + caching
@@ -520,6 +532,418 @@ def compute_segments_total(segments_line):
     return total, _format_duration(total)
 
 
+def _pcm_to_wav_bytes(pcm, channels=1, rate=24000, sample_width=2):
+    """Wrap Gemini's raw LINEAR16 PCM response in a WAV container for browser playback."""
+    if isinstance(pcm, str):
+        pcm = base64.b64decode(pcm)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(rate)
+        wf.writeframes(pcm)
+    return buf.getvalue()
+
+
+def _wav_bytes_to_pcm(wav_bytes):
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        params = wf.getparams()
+        pcm = wf.readframes(wf.getnframes())
+    return params, pcm
+
+
+def _wav_bytes_duration(wav_bytes):
+    params, pcm = _wav_bytes_to_pcm(wav_bytes)
+    frame_count = len(pcm) / (params.nchannels * params.sampwidth)
+    return frame_count / params.framerate if params.framerate else 0
+
+
+def _combine_wav_chunks(wav_chunks):
+    if not wav_chunks:
+        raise ValueError("No TTS audio chunks generated")
+
+    first_params, first_pcm = _wav_bytes_to_pcm(wav_chunks[0])
+    pcm_parts = [first_pcm]
+    for chunk in wav_chunks[1:]:
+        params, pcm = _wav_bytes_to_pcm(chunk)
+        if (
+            params.nchannels != first_params.nchannels
+            or params.sampwidth != first_params.sampwidth
+            or params.framerate != first_params.framerate
+        ):
+            raise ValueError("TTS chunk audio formats did not match")
+        pcm_parts.append(pcm)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(first_params.nchannels)
+        wf.setsampwidth(first_params.sampwidth)
+        wf.setframerate(first_params.framerate)
+        wf.writeframes(b"".join(pcm_parts))
+    return buf.getvalue()
+
+
+def chunk_tts_text(text, target_chars=GEMINI_TTS_CHUNK_TARGET_CHARS, max_chars=GEMINI_TTS_CHUNK_MAX_CHARS):
+    """Split text into Gemini TTS-sized chunks without cutting sentences unless necessary."""
+    text = re.sub(r"\n{3,}", "\n\n", text.strip())
+    if not text:
+        return []
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    chunks = []
+    current = ""
+
+    def split_oversized(piece):
+        sentences = re.split(r"(?<=[.!?])\s+", piece.strip())
+        result = []
+        buf = ""
+        for sentence in sentences:
+            if len(sentence) > max_chars:
+                if buf:
+                    result.append(buf.strip())
+                    buf = ""
+                for i in range(0, len(sentence), max_chars):
+                    result.append(sentence[i:i + max_chars].strip())
+                continue
+            candidate = f"{buf} {sentence}".strip() if buf else sentence
+            if len(candidate) <= max_chars:
+                buf = candidate
+            else:
+                result.append(buf.strip())
+                buf = sentence
+        if buf:
+            result.append(buf.strip())
+        return result
+
+    for paragraph in paragraphs:
+        pieces = split_oversized(paragraph) if len(paragraph) > max_chars else [paragraph]
+        for piece in pieces:
+            sep = "\n\n" if current else ""
+            candidate = f"{current}{sep}{piece}" if current else piece
+            if len(candidate) <= target_chars or not current:
+                current = candidate
+                continue
+            chunks.append(current.strip())
+            current = piece
+
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+
+def generate_gemini_tts_audio(text, voice_name=None):
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set. Add it to .env or your shell environment.")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as e:
+        raise RuntimeError("google-genai is not installed. Run: pip install -r requirements.txt") from e
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=GEMINI_TTS_MODEL,
+        contents=text,
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=voice_name or GEMINI_TTS_DEFAULT_VOICE,
+                    )
+                )
+            )
+        ),
+    )
+
+    pcm = response.candidates[0].content.parts[0].inline_data.data
+    return _pcm_to_wav_bytes(pcm)
+
+
+def _retry_delay_seconds(e):
+    response_json = getattr(e, "response_json", None)
+    if isinstance(response_json, dict):
+        for detail in response_json.get("error", {}).get("details", []):
+            retry_delay = detail.get("retryDelay")
+            if isinstance(retry_delay, str):
+                try:
+                    return float(retry_delay.rstrip("s"))
+                except ValueError:
+                    pass
+
+    text = str(e)
+    match = re.search(r"retry(?:Delay| in)?['\": ]+([0-9.]+)s", text, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    match = re.search(r"Please retry in ([0-9.]+)s", text, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _error_status_code(e):
+    status_code = getattr(e, "status_code", None)
+    if status_code is not None:
+        try:
+            return int(status_code)
+        except (TypeError, ValueError):
+            pass
+
+    response_json = getattr(e, "response_json", None)
+    if isinstance(response_json, dict):
+        code = response_json.get("error", {}).get("code")
+        if code is not None:
+            try:
+                return int(code)
+            except (TypeError, ValueError):
+                pass
+
+    text = str(e)
+    match = re.search(r"\b(429|500|502|503|504)\b", text)
+    if match:
+        return int(match.group(1))
+    if "RESOURCE_EXHAUSTED" in text:
+        return 429
+    return None
+
+
+TTS_JOBS = {}
+TTS_JOBS_LOCK = threading.Lock()
+TTS_SEMAPHORE = threading.Semaphore(GEMINI_TTS_CONCURRENCY)
+
+
+def _tts_chunk_audio_path(job_id, chunk_index):
+    return os.path.join(TTS_JOB_DIR, f"{job_id}_chunk_{chunk_index}.wav")
+
+
+def _tts_job_meta_path(job_id):
+    return os.path.join(TTS_JOB_DIR, f"{job_id}.json")
+
+
+def _serializable_tts_job(job):
+    data = {k: v for k, v in job.items() if k != "cancel_event"}
+    return data
+
+
+def _persist_tts_job(job):
+    try:
+        with open(_tts_job_meta_path(job["jobId"]), "w") as f:
+            json.dump(_serializable_tts_job(job), f)
+    except OSError:
+        app.logger.exception("failed to persist tts job metadata")
+
+
+def _load_tts_job(job_id):
+    path = _tts_job_meta_path(job_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            job = json.load(f)
+        job["cancel_event"] = threading.Event()
+        with TTS_JOBS_LOCK:
+            TTS_JOBS[job_id] = job
+        if job.get("status") in ("queued", "running"):
+            threading.Thread(target=_run_tts_job, args=(job_id,), daemon=True).start()
+        return job
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _public_tts_job(job):
+    public = {k: v for k, v in job.items() if k not in ("cancel_event", "audio_path", "chunks", "chunk_audio_paths")}
+    public["audioReady"] = bool(job.get("audio_path") and os.path.exists(job["audio_path"]))
+    public["chunkAudioReady"] = [
+        i + 1
+        for i, path in enumerate(job.get("chunk_audio_paths", []))
+        if path and os.path.exists(path)
+    ]
+    public["concurrency"] = GEMINI_TTS_CONCURRENCY
+    return public
+
+
+def _set_tts_job(job_id, **updates):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+        if not job:
+            return None
+        job.update(updates)
+        _persist_tts_job(job)
+        return job
+
+
+def _cleanup_tts_jobs(max_age_seconds=6 * 3600):
+    cutoff = time.time() - max_age_seconds
+    with TTS_JOBS_LOCK:
+        stale_ids = [
+            job_id for job_id, job in TTS_JOBS.items()
+            if job.get("finishedAt") and job["finishedAt"] < cutoff
+        ]
+        for job_id in stale_ids:
+            paths = [TTS_JOBS[job_id].get("audio_path")]
+            paths += TTS_JOBS[job_id].get("chunk_audio_paths", [])
+            paths.append(_tts_job_meta_path(job_id))
+            for path in paths:
+                if not path:
+                    continue
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            TTS_JOBS.pop(job_id, None)
+
+
+def _tts_error_payload(e, chunk_index=None):
+    status_code = _error_status_code(e)
+    error_type = "gemini_error"
+    retryable = False
+    retry_after = None
+
+    if status_code == 429:
+        error_type = "rate_limited"
+        retryable = True
+        retry_after = _retry_delay_seconds(e)
+        message = "Gemini TTS free-tier quota was exceeded."
+        if retry_after:
+            message += f" Retry after about {int(retry_after)} seconds."
+    elif status_code is not None and int(status_code) >= 500:
+        error_type = "transient_gemini_error"
+        retryable = True
+        message = str(e)
+    elif "GEMINI_API_KEY" in str(e) or "API key" in str(e):
+        error_type = "auth_error"
+        message = str(e)
+    else:
+        message = str(e)
+
+    return {
+        "type": error_type,
+        "message": message,
+        "retryable": retryable,
+        "retryAfterSeconds": retry_after,
+        "chunkIndex": chunk_index,
+    }
+
+
+def _run_tts_job(job_id):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        return
+
+    chunks = job["chunks"]
+    acquired = False
+
+    try:
+        if job["cancel_event"].is_set():
+            _set_tts_job(job_id, status="cancelled", finishedAt=time.time(), message="Cancelled")
+            return
+
+        _set_tts_job(job_id, status="queued", message="Queued")
+        TTS_SEMAPHORE.acquire()
+        acquired = True
+
+        if job["cancel_event"].is_set():
+            _set_tts_job(job_id, status="cancelled", finishedAt=time.time(), message="Cancelled")
+            return
+
+        if not job.get("startedAt"):
+            _set_tts_job(job_id, startedAt=time.time())
+        _set_tts_job(job_id, status="running")
+
+        for index, chunk in enumerate(chunks, start=1):
+            with TTS_JOBS_LOCK:
+                job = TTS_JOBS.get(job_id)
+                if not job:
+                    return
+                if index <= job.get("chunksDone", 0):
+                    continue
+
+            if job["cancel_event"].is_set():
+                _set_tts_job(job_id, status="cancelled", finishedAt=time.time(), message="Cancelled")
+                return
+
+            _set_tts_job(
+                job_id,
+                currentChunk=index,
+                message=f"Generating chunk {index}/{len(chunks)}",
+                currentChunkChars=len(chunk),
+            )
+            started = time.perf_counter()
+            _set_tts_job(job_id, status="running", message=f"Generating chunk {index}/{len(chunks)}")
+            wav_bytes = generate_gemini_tts_audio(chunk, voice_name=job["voiceName"])
+            chunk_path = _tts_chunk_audio_path(job_id, index)
+            with open(chunk_path, "wb") as f:
+                f.write(wav_bytes)
+
+            with TTS_JOBS_LOCK:
+                job = TTS_JOBS.get(job_id)
+                if not job:
+                    return
+                chunk_paths = list(job.get("chunk_audio_paths", []))
+                chunk_paths[index - 1] = chunk_path
+                chunk_durations = list(job.get("chunkTimings", []))
+                chunk_durations.append({
+                    "chunkIndex": index,
+                    "chars": len(chunk),
+                    "elapsedSeconds": round(time.perf_counter() - started, 2),
+                    "audioSeconds": round(_wav_bytes_duration(wav_bytes), 2),
+                })
+
+            _set_tts_job(
+                job_id,
+                chunksDone=index,
+                chunksReady=index,
+                chunk_audio_paths=chunk_paths,
+                chunkTimings=chunk_durations,
+                message=f"Generated chunk {index}/{len(chunks)}",
+            )
+
+        with TTS_JOBS_LOCK:
+            job = TTS_JOBS.get(job_id)
+            if not job:
+                return
+            chunk_paths = job.get("chunk_audio_paths", [])
+        wav_chunks = []
+        for index, path in enumerate(chunk_paths, start=1):
+            if not path or not os.path.exists(path):
+                raise RuntimeError(f"Missing generated audio for chunk {index}")
+            with open(path, "rb") as f:
+                wav_chunks.append(f.read())
+
+        combined = _combine_wav_chunks(wav_chunks)
+        audio_path = os.path.join(TTS_JOB_DIR, f"{job_id}.wav")
+        with open(audio_path, "wb") as f:
+            f.write(combined)
+
+        _set_tts_job(
+            job_id,
+            status="done",
+            audio_path=audio_path,
+            outputBytes=len(combined),
+            audioSeconds=round(_wav_bytes_duration(combined), 2),
+            finishedAt=time.time(),
+            message="Speech ready",
+        )
+    except Exception as e:
+        app.logger.exception("tts job failed")
+        with TTS_JOBS_LOCK:
+            job = TTS_JOBS.get(job_id)
+            chunk_index = job.get("currentChunk") if job else None
+        _set_tts_job(
+            job_id,
+            status="error",
+            error=_tts_error_payload(e, chunk_index=chunk_index),
+            finishedAt=time.time(),
+            message="Speech generation failed",
+        )
+    finally:
+        if acquired:
+            TTS_SEMAPHORE.release()
+
+
 @app.route("/generate-segments", methods=["POST"])
 def generate_segments():
     body = request.get_json(force=True)
@@ -709,6 +1133,194 @@ def visual_analyze():
     except Exception as e:
         app.logger.exception("visual-analyze failed")
         return jsonify({"error": f"Visual analysis failed: {e}"}), 500
+
+
+@app.route("/tts", methods=["POST"])
+def text_to_speech():
+    body = request.get_json(force=True)
+    text = body.get("text", "").strip()
+    voice_name = body.get("voiceName", GEMINI_TTS_DEFAULT_VOICE)
+
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        return jsonify({
+            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
+        }), 400
+
+    truncated = False
+    if len(text) > GEMINI_TTS_MAX_CHARS:
+        text = text[:GEMINI_TTS_MAX_CHARS].rstrip()
+        truncated = True
+
+    try:
+        wav_bytes = generate_gemini_tts_audio(text, voice_name=voice_name)
+    except Exception as e:
+        app.logger.exception("tts failed")
+        return jsonify({"error": f"Gemini TTS failed: {e}"}), 502
+
+    return jsonify({
+        "audioBase64": base64.b64encode(wav_bytes).decode("ascii"),
+        "mimeType": "audio/wav",
+        "model": GEMINI_TTS_MODEL,
+        "voiceName": voice_name,
+        "truncated": truncated,
+        "freeTierNote": "Uses the Gemini Developer API Standard tier model pricing, which lists free-of-charge input/output for this TTS model.",
+    })
+
+
+@app.route("/tts-job", methods=["POST"])
+def create_tts_job():
+    body = request.get_json(force=True)
+    text = body.get("text", "").strip()
+    voice_name = body.get("voiceName", GEMINI_TTS_DEFAULT_VOICE)
+
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        return jsonify({
+            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
+        }), 400
+
+    _cleanup_tts_jobs()
+    truncated = False
+    if len(text) > GEMINI_TTS_MAX_CHARS:
+        text = text[:GEMINI_TTS_MAX_CHARS].rstrip()
+        truncated = True
+
+    chunks = chunk_tts_text(text)
+    if not chunks:
+        return jsonify({"error": "text is empty after normalization"}), 400
+
+    job_id = uuid.uuid4().hex
+    job = {
+        "jobId": job_id,
+        "status": "queued",
+        "model": GEMINI_TTS_MODEL,
+        "voiceName": voice_name,
+        "inputChars": len(text),
+        "truncated": truncated,
+        "chunksTotal": len(chunks),
+        "chunksDone": 0,
+        "chunksReady": 0,
+        "currentChunk": 0,
+        "currentChunkChars": 0,
+        "chunkTimings": [],
+        "message": "Queued",
+        "createdAt": time.time(),
+        "startedAt": None,
+        "finishedAt": None,
+        "outputBytes": 0,
+        "audioSeconds": 0,
+        "error": None,
+        "chunks": chunks,
+        "chunk_audio_paths": [None] * len(chunks),
+        "audio_path": None,
+        "cancel_event": threading.Event(),
+    }
+
+    with TTS_JOBS_LOCK:
+        TTS_JOBS[job_id] = job
+    _persist_tts_job(job)
+
+    thread = threading.Thread(target=_run_tts_job, args=(job_id,), daemon=True)
+    thread.start()
+    return jsonify(_public_tts_job(job)), 202
+
+
+@app.route("/tts-job/<job_id>", methods=["GET"])
+def get_tts_job(job_id):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        job = _load_tts_job(job_id)
+    if not job:
+        return jsonify({"error": "TTS job not found"}), 404
+    return jsonify(_public_tts_job(job))
+
+
+@app.route("/tts-job/<job_id>", methods=["DELETE"])
+def cancel_tts_job(job_id):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        job = _load_tts_job(job_id)
+    if not job:
+        return jsonify({"error": "TTS job not found"}), 404
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+        job["cancel_event"].set()
+        if job["status"] in ("queued", "running", "rate_limited"):
+            job["status"] = "cancelling"
+            job["message"] = "Cancelling"
+            _persist_tts_job(job)
+        return jsonify(_public_tts_job(job))
+
+
+@app.route("/tts-job/<job_id>/retry", methods=["POST"])
+def retry_tts_job(job_id):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        job = _load_tts_job(job_id)
+    if not job:
+        return jsonify({"error": "TTS job not found"}), 404
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+        if job["status"] not in ("error", "cancelled"):
+            return jsonify({"error": "Only failed or cancelled TTS jobs can be retried"}), 409
+        job["status"] = "queued"
+        job["message"] = "Queued for retry"
+        job["error"] = None
+        job["finishedAt"] = None
+        job["cancel_event"] = threading.Event()
+        _persist_tts_job(job)
+        public = _public_tts_job(job)
+
+    thread = threading.Thread(target=_run_tts_job, args=(job_id,), daemon=True)
+    thread.start()
+    return jsonify(public), 202
+
+
+@app.route("/tts-job/<job_id>/chunk/<int:chunk_index>/audio", methods=["GET"])
+def get_tts_job_chunk_audio(job_id, chunk_index):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        job = _load_tts_job(job_id)
+    if not job:
+        return jsonify({"error": "TTS job not found"}), 404
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+        chunk_paths = job.get("chunk_audio_paths", [])
+        if chunk_index < 1 or chunk_index > len(chunk_paths):
+            return jsonify({"error": "TTS chunk not found"}), 404
+        audio_path = chunk_paths[chunk_index - 1]
+        if not audio_path:
+            return jsonify({"error": "TTS chunk audio is not ready"}), 409
+
+    if not os.path.exists(audio_path):
+        return jsonify({"error": "TTS chunk audio file is missing"}), 404
+    return send_file(audio_path, mimetype="audio/wav", as_attachment=False, download_name=f"{job_id}_chunk_{chunk_index}.wav")
+
+
+@app.route("/tts-job/<job_id>/audio", methods=["GET"])
+def get_tts_job_audio(job_id):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        job = _load_tts_job(job_id)
+    if not job:
+        return jsonify({"error": "TTS job not found"}), 404
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+        if job.get("status") != "done" or not job.get("audio_path"):
+            return jsonify({"error": "TTS audio is not ready"}), 409
+        audio_path = job["audio_path"]
+
+    if not os.path.exists(audio_path):
+        return jsonify({"error": "TTS audio file is missing"}), 404
+    return send_file(audio_path, mimetype="audio/wav", as_attachment=False, download_name=f"{job_id}.wav")
 
 
 @app.route("/health", methods=["GET"])

@@ -1,4 +1,4 @@
-# YouTube Segment Looper + Shortcuts
+# Project Documentation: YouTube Segment Looper + Shortcuts
 
 A Chrome/Edge extension for power-watching YouTube. It loops selected time segments, generates AI segments and summaries, answers questions about a video, analyzes its visuals — all running locally via the Codex CLI — and gives you fully customizable keyboard shortcuts that work on regular videos, Shorts, and even the hover-preview videos on the home feed.
 
@@ -23,6 +23,7 @@ A Chrome/Edge extension for power-watching YouTube. It loops selected time segme
 - **Shorts helpers** — Auto-scroll to the next Short when the current one finishes, plus bindable keys for next/previous Short (defaults: left `Shift` and `Tab`).
 - **Per-video storage** — Segments are saved per YouTube video ID and persist across browser sessions.
 - **Transcript caching** — Transcripts are cached locally per video ID so repeat requests for the same video don't re-download. Cache auto-cleans entries older than 7 days.
+- **Gemini TTS read-aloud** — Reads generated answers and summaries aloud using chunked Gemini TTS jobs with progress, retry handling, playback controls, seeking, and speed selection.
 - **Smart seek handling** — If you manually seek into a saved segment, playback continues from there. If you seek outside all segments, it jumps to the next one.
 
 ## Architecture
@@ -34,6 +35,7 @@ Chrome Extension (popup + content script)
     |  POST /summary                (transcript-based)
     |  POST /ask                    (transcript-based)
     |  POST /visual-analyze         (screenshots + transcript)
+    |  POST /tts-job + poll status  (Gemini TTS)
     v
 Local Flask Server (server.py :5055)
     |
@@ -41,6 +43,7 @@ Local Flask Server (server.py :5055)
     |  2. If not cached, fetch from youtube-transcript.io
     |  3. For visual analysis: decode frames, crop, dedup, build collages
     |  4. Pipe transcript via stdin + collage images via --image to codex exec
+    |  5. Chunk long TTS text and generate stitched WAV audio with Gemini
     v
 Codex CLI --> OpenAI LLM --> segments / summary / answer / visual analysis back to extension
 ```
@@ -59,9 +62,12 @@ video-extension/
 ├── options.html         # Full-page Shortcuts settings editor
 ├── options.js           # Options-page logic — row rendering, key capture, conflict detection, save/reset
 ├── options.css          # Dark theme styling for the options page
-├── server.py            # Local Flask service — transcript fetching, caching, Codex CLI
+├── server.py            # Local Flask service — transcript fetching, caching, Codex CLI, Gemini TTS
 ├── fetch_transcript.py  # Standalone transcript download script
-├── requirements.txt     # Python dependencies (flask, flask-cors, python-dotenv, Pillow)
+├── test_gemini_tts.py   # Gemini TTS smoke, chunking, and job-flow test helper
+├── AGENTS.md            # Short always-needed guide for coding agents
+├── PROJECT_DOCS.md      # Full project documentation
+├── requirements.txt     # Python dependencies
 ├── .env.example         # Environment variable template
 ├── .gitignore
 └── icons/
@@ -94,8 +100,23 @@ pip install -r video-extension/requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env if you need to override the transcript API key
+# Paste your Gemini API key into GEMINI_API_KEY if you want Gemini TTS
 ```
+
+For Gemini TTS, create a key at [Google AI Studio API Keys](https://aistudio.google.com/app/apikey), then edit `.env`:
+
+```bash
+GEMINI_API_KEY=your_google_ai_studio_key_here
+GEMINI_TTS_VOICE=Kore
+GEMINI_TTS_MAX_CHARS=15000
+GEMINI_TTS_CHUNK_TARGET_CHARS=2200
+GEMINI_TTS_CHUNK_MAX_CHARS=3000
+GEMINI_TTS_CONCURRENCY=1
+```
+
+This integration uses the Gemini Developer API model `gemini-3.1-flash-tts-preview`. Google's Gemini API pricing page lists this model's Standard free tier input and output as free of charge; keep the key in a free-tier AI Studio project without billing enabled if you want to avoid paid usage. The local server caps each TTS request to `GEMINI_TTS_MAX_CHARS` characters, then splits longer text into smaller Gemini calls using the chunk settings above.
+
+Free-tier Gemini TTS can be very quota-constrained. If Google returns `429 RESOURCE_EXHAUSTED`, the server stops the job with a structured error, includes retry timing when available, and the popup shows a manual Retry button instead of silently retrying. Since each chunk is a Gemini request, lowering chunk count can reduce quota pressure, while smaller chunks improve perceived progress and reliability.
 
 ### 3. Load the extension
 
@@ -143,6 +164,7 @@ The total duration is shown next to the **Segments** label and updates live as y
    - **Short Summary** — quick 3-5 sentence overview
    - **Key Pointers** — all important points with timestamps
 3. The result appears in the output box at the bottom of the popup
+4. Click the speaker button to read the result aloud with Gemini TTS, if `GEMINI_API_KEY` is configured. Long results show chunk progress and begin playback once the first chunk is ready.
 
 ### Ask about the video
 
@@ -355,9 +377,123 @@ Captures video frames as screenshots, builds collages, and sends them with the t
 { "answer": "The diagram shows a three-layer architecture...", "title": "...", "framesAnalyzed": 12 }
 ```
 
+### `POST /tts`
+
+Generates read-aloud audio using Gemini TTS in a single blocking request. This endpoint is kept for short smoke tests and backwards compatibility; the popup uses `/tts-job` for better progress and reliability.
+
+```json
+// Request
+{ "text": "Say cheerfully: Have a wonderful day!", "voiceName": "Kore" }
+
+// Response
+{
+  "audioBase64": "...",
+  "mimeType": "audio/wav",
+  "model": "gemini-3.1-flash-tts-preview",
+  "voiceName": "Kore",
+  "truncated": false
+}
+```
+
+### `POST /tts-job`
+
+Starts an asynchronous chunked Gemini TTS job and returns immediately.
+
+```json
+// Request
+{ "text": "Long summary text...", "voiceName": "Kore" }
+
+// Response
+{
+  "jobId": "...",
+  "status": "queued",
+  "model": "gemini-3.1-flash-tts-preview",
+  "voiceName": "Kore",
+  "inputChars": 9844,
+  "chunksTotal": 5,
+  "chunksDone": 0,
+  "chunksReady": 0,
+  "chunkAudioReady": [],
+  "audioReady": false
+}
+```
+
+### `GET /tts-job/<jobId>`
+
+Returns TTS progress. The popup polls this endpoint while speech is generated.
+
+```json
+{
+  "jobId": "...",
+  "status": "running",
+  "chunksTotal": 5,
+  "chunksDone": 2,
+  "chunksReady": 2,
+  "chunkAudioReady": [1, 2],
+  "currentChunk": 3,
+  "message": "Generating chunk 3/5",
+  "audioReady": false,
+  "chunkTimings": [
+    { "chunkIndex": 1, "chars": 2032, "elapsedSeconds": 31.4, "audioSeconds": 74.2 }
+  ]
+}
+```
+
+Status values are `queued`, `running`, `done`, `error`, `cancelling`, and `cancelled`; older cached jobs may still show `rate_limited`. Errors are structured with `type`, `message`, `retryable`, `retryAfterSeconds`, and `chunkIndex`.
+
+The server uses `GEMINI_TTS_CONCURRENCY` to limit simultaneous Gemini TTS calls. The default is `1`, which is safer for free-tier projects and means multiple YouTube tabs can create jobs while the server processes them in order.
+
+TTS job metadata and audio are cached under `~/.cache/video-extension/tts/`, so a popup can be closed and reopened for the same video and still recover the generated audio while the local server cache entry exists. Old finished jobs are cleaned up automatically.
+
+The popup shows a read-aloud toolbar above generated text, so the Engine selector is available before playback starts and does not cover the text. `Gemini TTS` uses the chunked server job and generated WAV playback with seek controls, while `Local browser` uses Chrome's built-in `speechSynthesis` without calling Gemini. Local browser audio is not a generated WAV file, so it is not cached like Gemini output and browser APIs do not support precise seeking; the popup hides the generated-audio control panel in local mode and uses a simple Stop/restart button.
+
+### `GET /tts-job/<jobId>/chunk/<index>/audio`
+
+Returns a generated chunk WAV as soon as that chunk is ready. The popup uses this for progressive playback while later chunks are still being generated.
+
+### `GET /tts-job/<jobId>/audio`
+
+Returns the final stitched WAV after the job status is `done`.
+
+### `POST /tts-job/<jobId>/retry`
+
+Retries a failed or cancelled job from the first unfinished chunk. Already generated chunks are reused.
+
+### `DELETE /tts-job/<jobId>`
+
+Requests cancellation for an in-progress TTS job.
+
 ### `GET /health`
 
 Returns `{ "status": "ok" }` if the server is running.
+
+## Testing Gemini TTS
+
+Inspect chunking without calling Gemini:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /path/to/video-extension-venv/bin/python3 test_gemini_tts.py \
+  --file sample_summary.txt \
+  --chunk-only
+```
+
+Run through the local chunked job API:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /path/to/video-extension-venv/bin/python3 test_gemini_tts.py \
+  --file sample_summary.txt \
+  --via-job \
+  --out /tmp/sample_summary_tts.wav
+```
+
+For a tiny live smoke test:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /path/to/video-extension-venv/bin/python3 test_gemini_tts.py \
+  --text "Chunked Gemini TTS job flow is working." \
+  --via-job \
+  --out /tmp/video-extension-tts-job-smoke.wav
+```
 
 ## How it handles YouTube edge cases
 
@@ -375,13 +511,16 @@ All extension state is kept in `chrome.storage.local`:
 - Shortcut settings: bindings, global steps, speed overlay preference, markers A/B
 - Transcript API key override (if set)
 
-Nothing leaves your machine unless you invoke an AI feature, in which case the transcript (and, for visual analysis, the cropped frame collages) is sent to the Codex CLI running locally, which in turn calls your configured OpenAI account. Clearing extension data (Shorts tab → **Clear all data**) wipes segments and shortcut settings.
+Nothing leaves your machine unless you invoke an AI feature, in which case the transcript (and, for visual analysis, the cropped frame collages) is sent to the Codex CLI running locally, which in turn calls your configured OpenAI account. If you click a speaker button with Gemini TTS configured, the displayed text is sent to the Gemini API to generate audio. Clearing extension data (Shorts tab → **Clear all data**) wipes segments and shortcut settings.
 
 ## Limitations
 
 - Only works on YouTube in the desktop browser (no mobile, no other video sites). Keyboard shortcuts target any `<video>` element found on a YouTube page but the extension is not injected on other domains.
 - The local server must be running for AI features (segment generation, summaries, Q&A, visual analysis). It is **not** required for manual segments, keyboard shortcuts, or the speed overlay.
-- Codex CLI must be installed and authenticated
+- Codex CLI must be installed and authenticated for transcript/visual AI features
+- Gemini TTS requires `GEMINI_API_KEY` in `.env`
+- Gemini TTS does not stream; long text is chunked, and the popup plays generated chunks progressively while the final stitched WAV is prepared
+- Gemini may occasionally return transient `500` errors; the server retries per chunk
 - Transcript availability depends on the youtube-transcript.io API and whether the video has captions
 - Visual analysis requires the tab to stay visible and focused during frame capture
 - Each collage image sent to the LLM must be under 5 MB (the server saves collages as JPEG at quality 85 to stay within this limit)
