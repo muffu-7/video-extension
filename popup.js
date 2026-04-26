@@ -63,6 +63,28 @@
   const vaTtsTime = document.getElementById("va-tts-time");
   const vaTtsProvider = document.getElementById("va-tts-provider");
   const vaTtsSpeed = document.getElementById("va-tts-speed");
+  const transcriptTtsUi = {
+    toolbar: ttsToolbar,
+    controls: ttsControls,
+    status: ttsStatus,
+    playPause: ttsPlayPause,
+    retry: ttsRetry,
+    seek: ttsSeek,
+    time: ttsTime,
+    provider: ttsProvider,
+    speed: ttsSpeed,
+  };
+  const visualTtsUi = {
+    toolbar: vaTtsToolbar,
+    controls: vaTtsControls,
+    status: vaTtsStatus,
+    playPause: vaTtsPlayPause,
+    retry: vaTtsRetry,
+    seek: vaTtsSeek,
+    time: vaTtsTime,
+    provider: vaTtsProvider,
+    speed: vaTtsSpeed,
+  };
   const shortsToggle = document.getElementById("shorts-toggle");
   const shortsPageStatus = document.getElementById("shorts-page-status");
   const shortcutsEnabledToggle = document.getElementById("shortcuts-enabled-toggle");
@@ -88,6 +110,7 @@
   let currentTtsChunkDurations = [];
   let currentTtsPlayingChunk = 0;
   let currentTtsSeekMode = "final";
+  let currentTtsWaitingForNextChunk = false;
   let currentChromeUtterance = null;
   let currentChromeText = "";
   let currentChromeStartedAt = 0;
@@ -409,30 +432,7 @@
   }
 
   function getTtsUi(btn) {
-    if (btn === vaSpeakBtn) {
-      return {
-        toolbar: vaTtsToolbar,
-        controls: vaTtsControls,
-        status: vaTtsStatus,
-        playPause: vaTtsPlayPause,
-        retry: vaTtsRetry,
-        seek: vaTtsSeek,
-        time: vaTtsTime,
-        provider: vaTtsProvider,
-        speed: vaTtsSpeed,
-      };
-    }
-    return {
-      toolbar: ttsToolbar,
-      controls: ttsControls,
-      status: ttsStatus,
-      playPause: ttsPlayPause,
-      retry: ttsRetry,
-      seek: ttsSeek,
-      time: ttsTime,
-      provider: ttsProvider,
-      speed: ttsSpeed,
-    };
+    return btn === vaSpeakBtn ? visualTtsUi : transcriptTtsUi;
   }
 
   function getTtsKind(btn) {
@@ -670,6 +670,22 @@
     ui.playPause.textContent = audio.paused ? "Play" : "Pause";
   }
 
+  function syncTtsPlaybackUi(audio, ui, btn) {
+    ui.controls.hidden = false;
+    ui.playPause.disabled = false;
+    syncTtsControls(audio, ui);
+    if (!btn) return;
+    btn.classList.remove("loading");
+    btn.classList.toggle("speaking", !audio.paused);
+    if (!audio.paused) {
+      btn.textContent = "Pause";
+    } else if (audio.ended || audio.currentTime === 0) {
+      btn.textContent = "Play";
+    } else {
+      btn.textContent = "Resume";
+    }
+  }
+
   function switchTtsProvider(ui) {
     if (!ui || currentTtsUi !== ui) {
       setTtsControlMode(ui, ui.provider.value);
@@ -692,7 +708,7 @@
     } else if (currentTtsAudio) {
       ui.controls.hidden = false;
       ui.playPause.disabled = false;
-      syncTtsControls(currentTtsAudio, ui);
+      syncTtsPlaybackUi(currentTtsAudio, ui, currentTtsButton);
       setTtsStatus(ui, "Gemini TTS selected.");
     } else {
       resetTtsControls(ui, true);
@@ -723,6 +739,7 @@
     currentTtsChunkDurations = [];
     currentTtsPlayingChunk = 0;
     currentTtsSeekMode = "final";
+    currentTtsWaitingForNextChunk = false;
     resetSpeakButton(currentTtsButton);
     resetTtsControls(currentTtsUi, hideControls);
     currentTtsButton = null;
@@ -744,10 +761,12 @@
     }
     if (!currentTtsAudio || !currentTtsUi) return;
     try {
+      if (currentTtsAudio.ended && currentTtsWaitingForNextChunk) {
+        currentTtsWaitingForNextChunk = false;
+      }
       currentTtsAudio.playbackRate = Number(currentTtsUi.speed.value) || 1;
       await currentTtsAudio.play();
-      currentTtsButton?.classList.add("speaking");
-      syncTtsControls(currentTtsAudio, currentTtsUi);
+      syncTtsPlaybackUi(currentTtsAudio, currentTtsUi, currentTtsButton);
     } catch (e) {
       setTtsStatus(currentTtsUi, e.message || "Could not play generated speech.", "error");
     }
@@ -764,38 +783,35 @@
 
     currentTtsSeekMode = "chunks";
     currentTtsPlayingChunk = index;
+    currentTtsWaitingForNextChunk = false;
     const audio = new Audio(url);
     audio.playbackRate = Number(ui.speed.value) || 1;
     currentTtsAudio = audio;
 
-    audio.onloadedmetadata = () => syncTtsControls(audio, ui);
+    audio.onloadedmetadata = () => syncTtsPlaybackUi(audio, ui, btn);
     audio.ontimeupdate = () => syncTtsControls(audio, ui);
     audio.onplay = () => {
-      btn.classList.add("speaking");
-      btn.textContent = "Pause";
-      syncTtsControls(audio, ui);
+      syncTtsPlaybackUi(audio, ui, btn);
     };
     audio.onpause = () => {
-      btn.classList.remove("speaking");
-      btn.textContent = "Resume";
-      syncTtsControls(audio, ui);
+      syncTtsPlaybackUi(audio, ui, btn);
     };
     audio.onended = async () => {
-      btn.classList.remove("speaking");
-      btn.textContent = "Read aloud";
       const nextIndex = index + 1;
       if (currentTtsChunkUrls[nextIndex]) {
         await playTtsChunk(nextIndex, btn, ui, true);
       } else if (currentTtsJobId) {
+        currentTtsWaitingForNextChunk = true;
+        syncTtsPlaybackUi(audio, ui, btn);
         setTtsStatus(ui, "Waiting for the next speech chunk...");
       } else {
-        syncTtsControls(audio, ui);
+        syncTtsPlaybackUi(audio, ui, btn);
       }
     };
     audio.onerror = () => setTtsStatus(ui, "Could not play generated speech chunk.", "error");
 
     if (autoplay) await playCurrentTts();
-    else syncTtsControls(audio, ui);
+    else syncTtsPlaybackUi(audio, ui, btn);
     return true;
   }
 
@@ -806,10 +822,12 @@
     const blob = await resp.blob();
     currentTtsChunkUrls[index - 1] = URL.createObjectURL(blob);
 
-    if (!currentTtsAudio && autoplayFirstChunk && index === 1) {
-      await playTtsChunk(0, btn, ui, true);
+    if (!currentTtsAudio && index === 1) {
+      await playTtsChunk(0, btn, ui, autoplayFirstChunk);
+    } else if (currentTtsWaitingForNextChunk && index - 1 === currentTtsPlayingChunk + 1) {
+      await playTtsChunk(index - 1, btn, ui, true);
     } else if (currentTtsSeekMode === "chunks" && currentTtsAudio) {
-      syncTtsControls(currentTtsAudio, ui);
+      syncTtsPlaybackUi(currentTtsAudio, ui, btn);
     }
   }
 
@@ -837,10 +855,9 @@
     currentTtsJobId = null;
     currentTtsAbort = null;
     currentTtsSeekMode = "final";
+    currentTtsWaitingForNextChunk = false;
     currentTtsMode = "gemini";
     setTtsControlMode(ui, "gemini");
-    btn.textContent = "Pause";
-    btn.classList.remove("loading");
 
     ui.playPause.disabled = false;
     ui.seek.disabled = false;
@@ -850,26 +867,21 @@
       if (resumeTime && Number.isFinite(audio.duration)) {
         audio.currentTime = Math.min(resumeTime, audio.duration);
       }
-      syncTtsControls(audio, ui);
+      syncTtsPlaybackUi(audio, ui, btn);
     };
     audio.ontimeupdate = () => syncTtsControls(audio, ui);
     audio.onplay = () => {
-      btn.classList.add("speaking");
-      btn.textContent = "Pause";
-      syncTtsControls(audio, ui);
+      syncTtsPlaybackUi(audio, ui, btn);
     };
     audio.onpause = () => {
-      btn.classList.remove("speaking");
-      btn.textContent = "Resume";
-      syncTtsControls(audio, ui);
+      syncTtsPlaybackUi(audio, ui, btn);
     };
     audio.onended = () => {
-      btn.classList.remove("speaking");
-      btn.textContent = "Read aloud";
-      syncTtsControls(audio, ui);
+      syncTtsPlaybackUi(audio, ui, btn);
     };
     audio.onerror = () => setTtsStatus(ui, "Could not play generated speech.", "error");
 
+    syncTtsPlaybackUi(audio, ui, btn);
     if (autoplay && (shouldKeepPlaying || !resumeTime)) await playCurrentTts();
   }
 
@@ -969,20 +981,19 @@
       return;
     }
 
-    if (currentTtsButton === btn && (currentTtsAbort || currentTtsJobId)) {
-      stopGeminiTts(true);
-      return;
-    }
-
     if (currentTtsAudio && currentTtsButton === btn) {
       if (currentTtsAudio.paused) {
         await playCurrentTts();
       } else {
+        currentTtsWaitingForNextChunk = false;
         currentTtsAudio.pause();
-        btn.classList.remove("speaking");
-        btn.textContent = "Resume";
-        syncTtsControls(currentTtsAudio, getTtsUi(btn));
+        syncTtsPlaybackUi(currentTtsAudio, ui, btn);
       }
+      return;
+    }
+
+    if (currentTtsButton === btn && (currentTtsAbort || currentTtsJobId)) {
+      stopGeminiTts(true);
       return;
     }
 
@@ -996,6 +1007,7 @@
     currentTtsChunkDurations = [];
     currentTtsPlayingChunk = 0;
     currentTtsSeekMode = "final";
+    currentTtsWaitingForNextChunk = false;
     revokeTtsUrls();
     resetTtsControls(ui, false);
     setTtsStatus(ui, "Generating speech with Gemini TTS... click the speaker again to cancel.");
@@ -1063,12 +1075,15 @@
       if (currentTtsAudio.paused) {
         playCurrentTts();
       } else {
+        currentTtsWaitingForNextChunk = false;
         currentTtsAudio.pause();
+        syncTtsPlaybackUi(currentTtsAudio, ui, currentTtsButton);
       }
     });
 
     ui.seek.addEventListener("input", () => {
       if (!currentTtsAudio || currentTtsUi !== ui) return;
+      currentTtsWaitingForNextChunk = false;
       const target = Number(ui.seek.value) || 0;
       if (currentTtsSeekMode === "chunks") {
         let offset = 0;
@@ -1081,7 +1096,7 @@
               if (currentTtsAudio) {
                 currentTtsAudio.currentTime = Math.max(0, target - offset);
                 if (wasPlaying) playCurrentTts();
-                else syncTtsControls(currentTtsAudio, ui);
+                else syncTtsPlaybackUi(currentTtsAudio, ui, currentTtsButton);
               }
             });
             return;
@@ -1091,7 +1106,7 @@
       } else {
         currentTtsAudio.currentTime = target;
       }
-      syncTtsControls(currentTtsAudio, ui);
+      syncTtsPlaybackUi(currentTtsAudio, ui, currentTtsButton);
     });
 
     ui.speed.addEventListener("change", () => {
@@ -1155,6 +1170,7 @@
         currentTtsKind = kind;
         currentTtsButton = btn;
         currentTtsUi = ui;
+        currentTtsWaitingForNextChunk = false;
         currentTtsChunkDurations = (job.chunkTimings || [])
           .sort((a, b) => a.chunkIndex - b.chunkIndex)
           .map((timing) => timing.audioSeconds || 0);

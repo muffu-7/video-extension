@@ -9,7 +9,7 @@ A Chrome/Edge extension for power-watching YouTube. It loops selected time segme
 - **Video insights** — Three one-click analysis modes:
   - **Detailed Summary** — comprehensive, section-by-section breakdown of the entire video
   - **Short Summary** — 3-5 sentence overview of the key takeaways
-  - **Key Pointers** — numbered list of every important point with timestamps and descriptions
+  - **Key Pointers** — numbered list of every important point without timestamps, using concise moderate detail
 - **Ask about the video** — Type any question about the video content and get an answer based on the transcript, without watching the whole thing. Optionally enable **web search** to let the LLM look up additional context, verify claims, or find related information beyond the transcript.
 - **Visual analysis** — Capture screenshots of a video segment, collage them with transcript context, and send to a vision-capable LLM. Useful for analyzing diagrams, code on screen, slides, or anything not captured by captions alone. Features:
   - Seek-and-capture (no real-time playback required — frames are grabbed by seeking through the video)
@@ -109,8 +109,8 @@ For Gemini TTS, create a key at [Google AI Studio API Keys](https://aistudio.goo
 GEMINI_API_KEY=your_google_ai_studio_key_here
 GEMINI_TTS_VOICE=Kore
 GEMINI_TTS_MAX_CHARS=15000
-GEMINI_TTS_CHUNK_TARGET_CHARS=2200
-GEMINI_TTS_CHUNK_MAX_CHARS=3000
+GEMINI_TTS_CHUNK_TARGET_CHARS=900
+GEMINI_TTS_CHUNK_MAX_CHARS=1100
 GEMINI_TTS_CONCURRENCY=1
 ```
 
@@ -162,7 +162,7 @@ The total duration is shown next to the **Segments** label and updates live as y
 2. Click one of the three insight buttons:
    - **Detailed Summary** — full breakdown with sections and quotes
    - **Short Summary** — quick 3-5 sentence overview
-   - **Key Pointers** — all important points with timestamps
+   - **Key Pointers** — all important points without timestamps, using concise moderate detail
 3. The result appears in the output box at the bottom of the popup
 4. Click the speaker button to read the result aloud with Gemini TTS, if `GEMINI_API_KEY` is configured. Long results show chunk progress and begin playback once the first chunk is ready.
 

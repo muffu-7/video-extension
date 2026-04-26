@@ -457,13 +457,12 @@ IMPORTANT: Always write your response in English, regardless of the language of 
 
     "key-pointers": """You are given a timestamped YouTube transcript on stdin.
 Extract all the key pointers and important points discussed in the video.
-For each pointer, provide:
-- The time window (MM:SS-MM:SS) where it is discussed
-- A detailed description of the point
+Do not include timestamps or time windows in the response.
+For each pointer, provide a moderately detailed description of the point.
 
 Format as a numbered list. Be comprehensive — capture every distinct important point,
-argument, or piece of news discussed in the video. Include enough detail that someone
-could understand each point without watching the video.
+argument, or piece of news discussed in the video. Include enough context that someone
+can understand the point, but keep each item concise and avoid overly detailed explanations.
 IMPORTANT: Always write your response in English, regardless of the language of the transcript.""",
 }
 
