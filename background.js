@@ -16,11 +16,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function handleServerRequest({ endpoint, videoId, body }) {
-  const jobKey = `job_${videoId}_${endpoint.replace(/^\//, "")}`;
+async function handleServerRequest({ endpoint, videoId, body, requestId, messageId, sessionId }) {
+  const keyPart = requestId || endpoint.replace(/^\//, "");
+  const jobKey = `job_${videoId}_${keyPart}`;
 
   await chrome.storage.local.set({
-    [jobKey]: { status: "pending", startedAt: Date.now() },
+    [jobKey]: {
+      status: "pending",
+      startedAt: Date.now(),
+      endpoint,
+      requestId: requestId || null,
+      messageId: messageId || null,
+      sessionId: sessionId || null,
+    },
   });
 
   try {
@@ -33,17 +41,39 @@ async function handleServerRequest({ endpoint, videoId, body }) {
 
     if (!resp.ok) {
       await chrome.storage.local.set({
-        [jobKey]: { status: "error", error: data.error || "Server error" },
+        [jobKey]: {
+          status: "error",
+          error: data.error || "Server error",
+          result: data,
+          endpoint,
+          requestId: requestId || null,
+          messageId: messageId || null,
+          sessionId: sessionId || null,
+        },
       });
       return;
     }
 
     await chrome.storage.local.set({
-      [jobKey]: { status: "done", result: data },
+      [jobKey]: {
+        status: "done",
+        result: data,
+        endpoint,
+        requestId: requestId || null,
+        messageId: messageId || null,
+        sessionId: sessionId || null,
+      },
     });
   } catch (e) {
     await chrome.storage.local.set({
-      [jobKey]: { status: "error", error: "Cannot reach local server. Is it running?" },
+      [jobKey]: {
+        status: "error",
+        error: "Cannot reach local server. Is it running?",
+        endpoint,
+        requestId: requestId || null,
+        messageId: messageId || null,
+        sessionId: sessionId || null,
+      },
     });
   }
 }

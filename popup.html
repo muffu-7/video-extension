@@ -14,14 +14,122 @@
 
     <div id="main-controls">
       <div class="tab-bar">
-        <button class="tab-btn active" data-tab="transcript-tab">Transcript</button>
+        <button class="tab-btn active" data-tab="chat-tab">Chat</button>
+        <button class="tab-btn" data-tab="transcript-tab">Transcript</button>
         <button class="tab-btn" data-tab="visual-tab">Visual Analysis</button>
         <button class="tab-btn" data-tab="shorts-tab">Shorts</button>
         <button class="tab-btn" data-tab="shortcuts-tab">Shortcuts</button>
       </div>
 
+      <!-- ===== Tab 1: Persistent Chat ===== -->
+      <div id="chat-tab" class="tab-panel active">
+        <div class="chat-toolbar">
+          <p id="chat-session-status" class="chat-status" hidden></p>
+          <button id="chat-clear-btn" class="ghost-btn ghost-btn-sm" title="Start a fresh chat session">New chat</button>
+        </div>
+
+        <div id="chat-messages" class="chat-messages">
+          <div class="chat-empty">
+            <div class="chat-empty-title">Chat with this video</div>
+            <div class="chat-empty-hint">Ask a question, get a summary of a window, or attach visual frames.</div>
+          </div>
+        </div>
+
+        <div id="chat-progress" class="chat-progress" hidden>
+          <div class="chat-progress-bar"><div class="chat-progress-fill" id="chat-progress-fill"></div></div>
+          <p id="chat-progress-text" class="chat-progress-text"></p>
+        </div>
+        <p id="chat-warning" class="chat-warning" hidden>Keep this tab visible while visual frames are captured.</p>
+
+        <div class="chat-suggestions">
+          <button class="chip-btn chat-summary-btn" data-summary-type="detailed">Detailed summary</button>
+          <button class="chip-btn chat-summary-btn" data-summary-type="short">Short summary</button>
+          <button class="chip-btn chat-summary-btn" data-summary-type="key-pointers">Key points</button>
+        </div>
+
+        <div class="chat-context-bar">
+          <button type="button" id="chat-context-toggle" class="chat-pill chat-pill-time" aria-expanded="false">
+            <svg class="chat-pill-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M8 4.5v3.7l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span id="chat-window-label">00:00 – 00:00</span>
+            <svg class="chat-pill-caret" viewBox="0 0 10 6" aria-hidden="true">
+              <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+
+          <label class="chat-pill chat-pill-toggle" title="Attach captured frames from the selected window">
+            <input type="checkbox" id="chat-visual-toggle">
+            <svg class="chat-pill-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="2" y="4" width="12" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="8" cy="8.5" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M5.5 4l1-1.4h3l1 1.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+            <span>Visual</span>
+          </label>
+
+          <label class="chat-pill chat-pill-toggle" title="Allow the model to use live web search">
+            <input type="checkbox" id="chat-search-toggle">
+            <svg class="chat-pill-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M1.5 8h13M8 1.5c2.2 2.2 2.2 10.8 0 13M8 1.5c-2.2 2.2-2.2 10.8 0 13" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+            <span>Web</span>
+          </label>
+        </div>
+
+        <div id="chat-context-panel" class="chat-context-panel" hidden>
+          <div class="window-header">
+            <label>Transcript window</label>
+            <button id="chat-full-video-btn" class="ghost-btn ghost-btn-sm">Full video</button>
+          </div>
+          <div class="range-slider">
+            <div class="range-slider-track"><div class="range-slider-fill" id="chat-range-fill"></div></div>
+            <input type="range" id="chat-range-min" min="0" max="100" value="0" step="1">
+            <input type="range" id="chat-range-max" min="0" max="100" value="100" step="1">
+          </div>
+          <div class="range-labels">
+            <input type="text" id="chat-range-start-label" value="00:00" spellcheck="false">
+            <input type="text" id="chat-range-end-label" value="00:00" spellcheck="false">
+          </div>
+
+          <div id="chat-visual-options" class="chat-visual-options" hidden>
+            <div class="va-setting-row">
+              <label for="chat-interval">Capture interval</label>
+              <div class="va-interval-control">
+                <input type="range" id="chat-interval" min="1" max="10" value="2" step="1">
+                <span id="chat-interval-label">1 frame / 2s</span>
+              </div>
+            </div>
+            <div class="va-setting-row">
+              <label>Skip similar frames</label>
+              <label class="toggle">
+                <input type="checkbox" id="chat-dedup-toggle" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-composer">
+          <textarea
+            id="chat-input"
+            rows="1"
+            placeholder="Ask about this video..."
+            spellcheck="false"
+          ></textarea>
+          <button id="chat-send-btn" class="send-btn" aria-label="Send message" title="Send (Enter)">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 8h11M9 3.5l4.5 4.5L9 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+
+      </div>
+
       <!-- ===== Tab 1: Transcript (existing features) ===== -->
-      <div id="transcript-tab" class="tab-panel active">
+      <div id="transcript-tab" class="tab-panel">
         <div class="generate-section">
           <label>Auto-generate</label>
           <input

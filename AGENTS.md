@@ -16,8 +16,10 @@ Essential context for coding agents working in this Chrome extension repo. Full 
 - Chrome rejects unpacked extensions containing files or directories whose names start with `_`, including Python `__pycache__`. Always run Python checks with `PYTHONDONTWRITEBYTECODE=1`, keep virtualenvs outside `video-extension/`, and remove `__pycache__/` before asking the user to reload the extension.
 - Never commit or print `.env` secrets. `GEMINI_API_KEY` and `YOUTUBE_TRANSCRIPT_API_KEY` belong in `.env`.
 - Do not put temporary outputs, generated audio, virtualenvs, build artifacts, or caches in the extension root unless the user explicitly asks for a local test artifact.
+- On this Linux machine, the server venv lives at `/home/mufaddaltatiwala/projects/video-extension-venv`, and the user systemd service is `/home/mufaddaltatiwala/.config/systemd/user/video-extension-server.service`.
+- The Linux service runs `server.py` with `/home/mufaddaltatiwala/projects/video-extension-venv/bin/python`; install server dependencies there when changing `requirements.txt`, then run `systemctl --user restart video-extension-server.service`.
 - The macOS Launch Agent uses `/Users/muffu/Documents/Projects/pythonProjects/video-extension-venv/bin/python3`; install server dependencies there when changing `requirements.txt`.
-- After editing popup files, the user must reload the extension in `chrome://extensions`. After editing `.env` or server dependencies, restart the local server/Launch Agent.
+- After editing popup files, the user must reload the extension in `chrome://extensions`. After editing `.env` or server dependencies, restart the local server/Launch Agent/systemd service.
 
 ## Gemini TTS Notes
 
@@ -29,7 +31,8 @@ Essential context for coding agents working in this Chrome extension repo. Full 
 
 ## Validation Checklist
 
-- `PYTHONDONTWRITEBYTECODE=1 /Users/muffu/Documents/Projects/pythonProjects/video-extension-venv/bin/python3 -m py_compile server.py`
+- Linux: `PYTHONDONTWRITEBYTECODE=1 /home/mufaddaltatiwala/projects/video-extension-venv/bin/python -m py_compile server.py`
+- macOS: `PYTHONDONTWRITEBYTECODE=1 /Users/muffu/Documents/Projects/pythonProjects/video-extension-venv/bin/python3 -m py_compile server.py`
 - `node --check popup.js`
 - `curl -s http://127.0.0.1:5055/health`
 - Remove `__pycache__/` before extension reload.

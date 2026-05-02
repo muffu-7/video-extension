@@ -22,7 +22,7 @@ import urllib.error
 import uuid
 import wave
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
@@ -43,9 +43,15 @@ GEMINI_TTS_CHUNK_TARGET_CHARS = int(os.environ.get("GEMINI_TTS_CHUNK_TARGET_CHAR
 GEMINI_TTS_CHUNK_MAX_CHARS = int(os.environ.get("GEMINI_TTS_CHUNK_MAX_CHARS", "3000"))
 GEMINI_TTS_CONCURRENCY = max(1, int(os.environ.get("GEMINI_TTS_CONCURRENCY", "1")))
 TTS_JOB_DIR = os.path.expanduser("~/.cache/video-extension/tts")
+SESSION_DIR = os.path.expanduser("~/.cache/video-extension/sessions")
+SESSION_MAX_AGE_DAYS = int(os.environ.get("VIDEO_EXTENSION_SESSION_MAX_AGE_DAYS", "30"))
+CHAT_HISTORY_MAX_CHARS = int(os.environ.get("VIDEO_EXTENSION_CHAT_HISTORY_MAX_CHARS", "16000"))
+CHAT_HISTORY_MAX_MESSAGES = int(os.environ.get("VIDEO_EXTENSION_CHAT_HISTORY_MAX_MESSAGES", "16"))
+CHAT_PRIOR_IMAGE_LIMIT = int(os.environ.get("VIDEO_EXTENSION_CHAT_PRIOR_IMAGE_LIMIT", "3"))
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(TTS_JOB_DIR, exist_ok=True)
+os.makedirs(SESSION_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Transcript fetching + caching
@@ -468,6 +474,327 @@ IMPORTANT: Always write your response in English, regardless of the language of 
 
 
 # ---------------------------------------------------------------------------
+# Chat sessions
+# ---------------------------------------------------------------------------
+
+CHAT_PROMPT = """You are a helpful assistant in a persistent chat about one YouTube video.
+
+Current video title: {title}
+Current turn mode: {mode}
+Current transcript window: {window_label}
+
+Recent conversation:
+{history}
+
+Current transcript context:
+{transcript}
+
+{visual_context}
+
+User request:
+{question}
+
+Instructions:
+- Answer in English.
+- Use the current transcript context as the main source for this turn.
+- Use prior conversation to understand follow-up references and avoid repeating yourself.
+- If prior visual collages are attached, you may refer to them as visual context from earlier turns.
+- If the selected transcript window does not contain the answer, say that clearly and explain whether prior context helps.
+- Include timestamps when useful and when they are available in the context."""
+
+SUMMARY_CHAT_REQUESTS = {
+    "detailed": "Provide a detailed summary of the selected transcript window.",
+    "short": "Provide a short 3-5 sentence summary of the selected transcript window.",
+    "key-pointers": "Extract the key pointers from the selected transcript window as a concise numbered list.",
+}
+
+
+def _safe_id(value, fallback="item"):
+    value = str(value or fallback)
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", value).strip("._")
+    return cleaned[:120] or fallback
+
+
+# Per-video lock guarding all session JSON file reads/writes for a given video.
+# Coarse-grained (one lock per video, not per session) because a single user is
+# typically working with one active session per video, and this avoids having
+# to resolve a session id before we can safely serialize access.
+_SESSION_FILE_LOCKS = {}
+_SESSION_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _session_file_lock(video_id):
+    key = _safe_id(video_id, "video")
+    with _SESSION_FILE_LOCKS_GUARD:
+        lock = _SESSION_FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _SESSION_FILE_LOCKS[key] = lock
+        return lock
+
+
+def _video_session_root(video_id):
+    return os.path.join(SESSION_DIR, _safe_id(video_id, "video"))
+
+
+def _active_session_path(video_id):
+    return os.path.join(_video_session_root(video_id), "active.json")
+
+
+def _session_json_path(video_id, session_id):
+    return os.path.join(_video_session_root(video_id), "sessions", f"{_safe_id(session_id, 'session')}.json")
+
+
+def _session_artifact_dir(video_id, session_id):
+    return os.path.join(_video_session_root(video_id), "artifacts", _safe_id(session_id, "session"))
+
+
+def _write_json_atomic(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _read_json(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def _new_session(video_id, title=None):
+    session_id = uuid.uuid4().hex
+    now = time.time()
+    session = {
+        "videoId": video_id,
+        "sessionId": session_id,
+        "title": title or video_id,
+        "createdAt": now,
+        "updatedAt": now,
+        "messages": [],
+    }
+    _save_session(session)
+    return session
+
+
+def _save_session(session):
+    session["updatedAt"] = time.time()
+    video_id = session["videoId"]
+    session_id = session["sessionId"]
+    _write_json_atomic(_session_json_path(video_id, session_id), session)
+    _write_json_atomic(_active_session_path(video_id), {"sessionId": session_id, "updatedAt": session["updatedAt"]})
+
+
+def _load_session(video_id, session_id):
+    if not session_id:
+        return None
+    path = _session_json_path(video_id, session_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        return _read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _load_active_session(video_id):
+    active_path = _active_session_path(video_id)
+    if not os.path.exists(active_path):
+        return None
+    try:
+        active = _read_json(active_path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return _load_session(video_id, active.get("sessionId"))
+
+
+def _get_or_create_session(video_id, session_id=None, title=None):
+    session = _load_session(video_id, session_id) if session_id else _load_active_session(video_id)
+    if session:
+        if title and not session.get("title"):
+            session["title"] = title
+        return session
+    return _new_session(video_id, title=title)
+
+
+def _delete_active_session(video_id):
+    session = _load_active_session(video_id)
+    if not session:
+        return _new_session(video_id)
+
+    session_id = session["sessionId"]
+    for path in (
+        _session_json_path(video_id, session_id),
+        _active_session_path(video_id),
+    ):
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+        except OSError:
+            pass
+
+    artifact_dir = _session_artifact_dir(video_id, session_id)
+    if os.path.isdir(artifact_dir):
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+
+    return _new_session(video_id, title=session.get("title") or video_id)
+
+
+def _cleanup_old_sessions():
+    cutoff = time.time() - (SESSION_MAX_AGE_DAYS * 86400)
+    if not os.path.isdir(SESSION_DIR):
+        return
+    for video_name in os.listdir(SESSION_DIR):
+        video_root = os.path.join(SESSION_DIR, video_name)
+        sessions_root = os.path.join(video_root, "sessions")
+        if not os.path.isdir(sessions_root):
+            continue
+        for json_path in glob.glob(os.path.join(sessions_root, "*.json")):
+            try:
+                session = _read_json(json_path)
+                updated_at = session.get("updatedAt") or os.path.getmtime(json_path)
+                if updated_at >= cutoff:
+                    continue
+                session_id = session.get("sessionId") or os.path.splitext(os.path.basename(json_path))[0]
+                os.unlink(json_path)
+                shutil.rmtree(os.path.join(video_root, "artifacts", _safe_id(session_id, "session")), ignore_errors=True)
+                active_path = os.path.join(video_root, "active.json")
+                if os.path.exists(active_path):
+                    active = _read_json(active_path)
+                    if active.get("sessionId") == session_id:
+                        os.unlink(active_path)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+
+def _public_session(session):
+    def public_message(msg):
+        out = dict(msg)
+        out["artifacts"] = [
+            {k: v for k, v in artifact.items() if k != "absPath"}
+            for artifact in (msg.get("artifacts") or [])
+        ]
+        return out
+
+    return {
+        "videoId": session.get("videoId"),
+        "sessionId": session.get("sessionId"),
+        "title": session.get("title"),
+        "createdAt": session.get("createdAt"),
+        "updatedAt": session.get("updatedAt"),
+        "messages": [public_message(msg) for msg in session.get("messages", [])],
+    }
+
+
+def _message(role, kind, text, status="done", context=None, usage=None, error=None, artifacts=None):
+    data = {
+        "id": uuid.uuid4().hex,
+        "role": role,
+        "kind": kind,
+        "text": text or "",
+        "createdAt": time.time(),
+        "status": status,
+        "context": context or {},
+        "artifacts": artifacts or [],
+    }
+    if usage:
+        data["usage"] = usage
+    if error:
+        data["error"] = error
+    return data
+
+
+def _format_window_label(start_time, end_time):
+    if start_time is None and end_time is None:
+        return "full video"
+    start = format_time(start_time or 0)
+    end = format_time(end_time or 0)
+    return f"{start}-{end}"
+
+
+def _history_text(messages, max_chars=CHAT_HISTORY_MAX_CHARS, max_messages=CHAT_HISTORY_MAX_MESSAGES):
+    selected = [m for m in messages if m.get("role") in ("user", "assistant") and m.get("status") == "done"]
+    selected = selected[-max_messages:]
+    lines = []
+    total = 0
+    for msg in reversed(selected):
+        text = (msg.get("text") or "").strip()
+        if not text:
+            continue
+        context = msg.get("context") or {}
+        label = msg.get("role", "message").capitalize()
+        meta = []
+        if context.get("usedVisual"):
+            meta.append("visual")
+        if context.get("webSearch"):
+            meta.append("web search")
+        if context.get("transcriptStart") is not None or context.get("transcriptEnd") is not None:
+            meta.append(_format_window_label(context.get("transcriptStart"), context.get("transcriptEnd")))
+        prefix = f"{label}"
+        if meta:
+            prefix += f" ({', '.join(meta)})"
+        entry = f"{prefix}: {text}"
+        if total + len(entry) > max_chars:
+            break
+        lines.append(entry)
+        total += len(entry)
+    return "\n\n".join(reversed(lines)) or "(No prior conversation.)"
+
+
+def _prior_collage_paths(session, limit=CHAT_PRIOR_IMAGE_LIMIT):
+    paths = []
+    messages = list(session.get("messages", []))
+    for msg in reversed(messages):
+        for artifact in reversed(msg.get("artifacts") or []):
+            if artifact.get("type") != "collage":
+                continue
+            abs_path = artifact.get("absPath")
+            if abs_path and os.path.exists(abs_path):
+                paths.append(abs_path)
+            if len(paths) >= limit:
+                return list(reversed(paths))
+    return list(reversed(paths))
+
+
+def _persist_chat_collages(video_id, session_id, turn_id, frames, batch_size=10):
+    artifact_dir = _session_artifact_dir(video_id, session_id)
+    os.makedirs(artifact_dir, exist_ok=True)
+    artifacts = []
+    image_paths = []
+    for i in range(0, len(frames), batch_size):
+        batch = frames[i:i + batch_size]
+        collage = build_collage(batch, start_idx=i)
+        filename = f"{_safe_id(turn_id, 'turn')}-collage-{len(artifacts) + 1:03d}.jpg"
+        abs_path = os.path.join(artifact_dir, filename)
+        collage.save(abs_path, format="JPEG", quality=85)
+        timestamps = [timestamp for timestamp, _img in batch]
+        artifact = {
+            "type": "collage",
+            "filename": filename,
+            "absPath": abs_path,
+            "url": f"/chat-artifact/{_safe_id(video_id, 'video')}/{_safe_id(session_id, 'session')}/{filename}",
+            "frameCount": len(batch),
+            "startTime": min(timestamps) if timestamps else None,
+            "endTime": max(timestamps) if timestamps else None,
+        }
+        artifacts.append(artifact)
+        image_paths.append(abs_path)
+    return artifacts, image_paths
+
+
+def _build_chat_prompt(title, mode, question, transcript_text, context, history, visual_note):
+    return CHAT_PROMPT.format(
+        title=title,
+        mode=mode,
+        window_label=_format_window_label(context.get("transcriptStart"), context.get("transcriptEnd")),
+        history=history,
+        transcript=transcript_text or "(Transcript not available.)",
+        visual_context=visual_note,
+        question=question,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -712,6 +1039,23 @@ TTS_JOBS = {}
 TTS_JOBS_LOCK = threading.Lock()
 TTS_SEMAPHORE = threading.Semaphore(GEMINI_TTS_CONCURRENCY)
 
+TTS_JOB_CONDITIONS = {}
+TTS_JOB_CONDITIONS_LOCK = threading.Lock()
+
+
+def _job_condition(job_id):
+    with TTS_JOB_CONDITIONS_LOCK:
+        cond = TTS_JOB_CONDITIONS.get(job_id)
+        if cond is None:
+            cond = threading.Condition()
+            TTS_JOB_CONDITIONS[job_id] = cond
+        return cond
+
+
+def _drop_job_condition(job_id):
+    with TTS_JOB_CONDITIONS_LOCK:
+        TTS_JOB_CONDITIONS.pop(job_id, None)
+
 
 def _tts_chunk_audio_path(job_id, chunk_index):
     return os.path.join(TTS_JOB_DIR, f"{job_id}_chunk_{chunk_index}.wav")
@@ -770,7 +1114,57 @@ def _set_tts_job(job_id, **updates):
             return None
         job.update(updates)
         _persist_tts_job(job)
-        return job
+        snapshot = dict(job)
+    cond = _job_condition(job_id)
+    with cond:
+        cond.notify_all()
+    if snapshot.get("chatBinding"):
+        try:
+            _sync_chat_message_audio(snapshot)
+        except Exception:
+            app.logger.exception("failed to sync chat message audio")
+    return snapshot
+
+
+def _public_audio_state(job):
+    # Note: intentionally excludes any wall-clock timestamp so identity comparisons
+    # in _sync_chat_message_audio don't trigger spurious session rewrites on every
+    # TTS state tick.
+    return {
+        "jobId": job.get("jobId"),
+        "status": job.get("status"),
+        "voice": job.get("voiceName"),
+        "chunksTotal": job.get("chunksTotal", 0),
+        "chunksReady": job.get("chunksReady", 0),
+        "chunksDone": job.get("chunksDone", 0),
+        "durationSec": job.get("audioSeconds"),
+        "error": (job.get("error") or {}).get("message") if job.get("error") else None,
+        "errorType": (job.get("error") or {}).get("type") if job.get("error") else None,
+    }
+
+
+def _sync_chat_message_audio(job):
+    binding = job.get("chatBinding") or {}
+    video_id = binding.get("videoId")
+    session_id = binding.get("sessionId")
+    message_id = binding.get("messageId")
+    if not (video_id and session_id and message_id):
+        return
+    with _session_file_lock(video_id):
+        session = _load_session(video_id, session_id)
+        if not session:
+            return
+        changed = False
+        for msg in session.get("messages", []):
+            if msg.get("id") != message_id:
+                continue
+            new_state = _public_audio_state(job)
+            if msg.get("audio") != new_state:
+                msg["audio"] = new_state
+                changed = True
+            break
+        if changed:
+            _save_session(session)
 
 
 def _cleanup_tts_jobs(max_age_seconds=6 * 3600):
@@ -792,6 +1186,7 @@ def _cleanup_tts_jobs(max_age_seconds=6 * 3600):
                 except OSError:
                     pass
             TTS_JOBS.pop(job_id, None)
+            _drop_job_condition(job_id)
 
 
 def _tts_error_payload(e, chunk_index=None):
@@ -941,6 +1336,182 @@ def _run_tts_job(job_id):
     finally:
         if acquired:
             TTS_SEMAPHORE.release()
+
+
+@app.route("/chat-session", methods=["GET"])
+def get_chat_session():
+    video_id = request.args.get("videoId")
+    if not video_id:
+        return jsonify({"error": "videoId is required"}), 400
+    _cleanup_old_sessions()
+    with _session_file_lock(video_id):
+        session = _get_or_create_session(video_id)
+        return jsonify({"session": _public_session(session)})
+
+
+@app.route("/chat-session/new", methods=["POST"])
+def new_chat_session():
+    body = request.get_json(force=True)
+    video_id = body.get("videoId")
+    title = body.get("title")
+    if not video_id:
+        return jsonify({"error": "videoId is required"}), 400
+    _cleanup_old_sessions()
+    with _session_file_lock(video_id):
+        session = _delete_active_session(video_id)
+        if title:
+            session["title"] = title
+            _save_session(session)
+        return jsonify({"session": _public_session(session)})
+
+
+@app.route("/chat-artifact/<video_id>/<session_id>/<filename>", methods=["GET"])
+def get_chat_artifact(video_id, session_id, filename):
+    video_id = _safe_id(video_id, "video")
+    session_id = _safe_id(session_id, "session")
+    filename = _safe_id(filename, "artifact.jpg")
+    artifact_dir = _session_artifact_dir(video_id, session_id)
+    path = os.path.join(artifact_dir, filename)
+    if not os.path.exists(path):
+        return jsonify({"error": "artifact not found"}), 404
+    return send_file(path, mimetype="image/jpeg", as_attachment=False, download_name=filename)
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    body = request.get_json(force=True)
+    video_id = body.get("videoId")
+    session_id = body.get("sessionId")
+    question = (body.get("question") or "").strip()
+    mode = body.get("mode") or "text"
+    context = body.get("context") or {}
+    web_search = bool(body.get("webSearch", False))
+    raw_frames = body.get("frames") or []
+    video_rect = body.get("videoRect")
+    do_dedup = body.get("deduplicate", True)
+
+    if not video_id:
+        return jsonify({"error": "videoId is required"}), 400
+    if mode == "summary":
+        summary_type = body.get("summaryType", "detailed")
+        question = SUMMARY_CHAT_REQUESTS.get(summary_type, SUMMARY_CHAT_REQUESTS["detailed"])
+    if not question:
+        return jsonify({"error": "question is required"}), 400
+
+    _cleanup_old_sessions()
+    with _session_file_lock(video_id):
+        session = _get_or_create_session(video_id, session_id)
+        start_time = context.get("transcriptStart")
+        end_time = context.get("transcriptEnd")
+        visual_start = context.get("visualStart", start_time)
+        visual_end = context.get("visualEnd", end_time)
+        turn_context = {
+            "transcriptStart": start_time,
+            "transcriptEnd": end_time,
+            "visualStart": visual_start,
+            "visualEnd": visual_end,
+            "usedVisual": bool(raw_frames) or mode == "visual",
+            "webSearch": web_search,
+        }
+
+        user_msg = _message("user", mode, question, context=turn_context)
+        session.setdefault("messages", []).append(user_msg)
+        _save_session(session)
+
+        artifacts = []
+        current_image_paths = []
+        try:
+            title = session.get("title") or video_id
+            try:
+                transcript_text, fetched_title = get_transcript_text(video_id, start_time=start_time, end_time=end_time)
+                title = fetched_title or title
+                session["title"] = title
+            except Exception:
+                transcript_text = "(Transcript not available for this selected window.)"
+
+            if raw_frames:
+                frames = []
+                for f in raw_frames:
+                    img = decode_frame(f["dataUrl"])
+                    img = crop_frame(img, video_rect)
+                    frames.append((f["timestamp"], img))
+                if do_dedup:
+                    frames = deduplicate_frames(frames)
+                if not frames:
+                    dedup_error = "All frames were duplicates — nothing to analyze."
+                    assistant_msg = _message(
+                        "assistant",
+                        mode,
+                        "",
+                        status="error",
+                        context=turn_context,
+                        error=dedup_error,
+                        artifacts=[],
+                    )
+                    session.setdefault("messages", []).append(assistant_msg)
+                    _save_session(session)
+                    return jsonify({"error": dedup_error, "session": _public_session(session)}), 400
+                turn_context["frameCount"] = len(frames)
+                artifacts, current_image_paths = _persist_chat_collages(
+                    video_id, session["sessionId"], user_msg["id"], frames
+                )
+
+            prior_image_paths = [] if current_image_paths else _prior_collage_paths(session)
+            image_paths = current_image_paths + prior_image_paths
+            if current_image_paths:
+                visual_note = (
+                    "Current turn includes newly captured visual collages. "
+                    "Use them together with the transcript."
+                )
+            elif prior_image_paths:
+                visual_note = (
+                    "Attached images are persisted visual collages from earlier turns in this session. "
+                    "Use them only when the user's follow-up appears to refer to prior visual context."
+                )
+            else:
+                visual_note = "No visual images are attached for this turn."
+
+            history = _history_text(session.get("messages", [])[:-1])
+            prompt = _build_chat_prompt(title, mode, question, transcript_text, turn_context, history, visual_note)
+            if web_search:
+                prompt += WEB_SEARCH_INSTRUCTION
+
+            if image_paths:
+                answer, usage = run_codex_with_images(prompt, transcript_text, image_paths, search=web_search)
+            else:
+                answer, usage = run_codex(prompt, transcript_text, search=web_search)
+
+            assistant_msg = _message(
+                "assistant",
+                mode,
+                answer,
+                context=turn_context,
+                usage=usage,
+                artifacts=artifacts,
+            )
+            session.setdefault("messages", []).append(assistant_msg)
+            _save_session(session)
+            return jsonify({
+                "answer": answer,
+                "title": title,
+                "usage": usage,
+                "session": _public_session(session),
+                "message": _public_session({"messages": [assistant_msg]}).get("messages", [assistant_msg])[0],
+            })
+        except Exception as e:
+            app.logger.exception("chat failed")
+            assistant_msg = _message(
+                "assistant",
+                mode,
+                "",
+                status="error",
+                context=turn_context,
+                error=str(e),
+                artifacts=artifacts,
+            )
+            session.setdefault("messages", []).append(assistant_msg)
+            _save_session(session)
+            return jsonify({"error": f"Chat failed: {e}", "session": _public_session(session)}), 500
 
 
 @app.route("/generate-segments", methods=["POST"])
@@ -1168,20 +1739,11 @@ def text_to_speech():
     })
 
 
-@app.route("/tts-job", methods=["POST"])
-def create_tts_job():
-    body = request.get_json(force=True)
-    text = body.get("text", "").strip()
-    voice_name = body.get("voiceName", GEMINI_TTS_DEFAULT_VOICE)
-
+def _build_tts_job(text, voice_name, chat_binding=None):
+    """Validate, chunk, persist, and launch a TTS job. Returns (job_dict, truncated, error_message)."""
     if not text:
-        return jsonify({"error": "text is required"}), 400
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        return jsonify({
-            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
-        }), 400
+        return None, False, "text is required"
 
-    _cleanup_tts_jobs()
     truncated = False
     if len(text) > GEMINI_TTS_MAX_CHARS:
         text = text[:GEMINI_TTS_MAX_CHARS].rstrip()
@@ -1189,14 +1751,14 @@ def create_tts_job():
 
     chunks = chunk_tts_text(text)
     if not chunks:
-        return jsonify({"error": "text is empty after normalization"}), 400
+        return None, truncated, "text is empty after normalization"
 
     job_id = uuid.uuid4().hex
     job = {
         "jobId": job_id,
         "status": "queued",
         "model": GEMINI_TTS_MODEL,
-        "voiceName": voice_name,
+        "voiceName": voice_name or GEMINI_TTS_DEFAULT_VOICE,
         "inputChars": len(text),
         "truncated": truncated,
         "chunksTotal": len(chunks),
@@ -1217,14 +1779,143 @@ def create_tts_job():
         "audio_path": None,
         "cancel_event": threading.Event(),
     }
+    if chat_binding:
+        job["chatBinding"] = dict(chat_binding)
 
     with TTS_JOBS_LOCK:
         TTS_JOBS[job_id] = job
     _persist_tts_job(job)
 
-    thread = threading.Thread(target=_run_tts_job, args=(job_id,), daemon=True)
-    thread.start()
+    threading.Thread(target=_run_tts_job, args=(job_id,), daemon=True).start()
+    return job, truncated, None
+
+
+@app.route("/tts-job", methods=["POST"])
+def create_tts_job():
+    body = request.get_json(force=True)
+    text = (body.get("text") or "").strip()
+    voice_name = body.get("voiceName", GEMINI_TTS_DEFAULT_VOICE)
+
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        return jsonify({
+            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
+        }), 400
+
+    _cleanup_tts_jobs()
+    job, _truncated, err = _build_tts_job(text, voice_name)
+    if err:
+        return jsonify({"error": err}), 400
     return jsonify(_public_tts_job(job)), 202
+
+
+@app.route("/chat-tts", methods=["POST"])
+def create_chat_tts():
+    body = request.get_json(force=True)
+    video_id = body.get("videoId")
+    session_id = body.get("sessionId")
+    message_id = body.get("messageId")
+    voice_name = body.get("voiceName") or GEMINI_TTS_DEFAULT_VOICE
+    force = bool(body.get("force", False))
+
+    if not video_id or not session_id or not message_id:
+        return jsonify({"error": "videoId, sessionId, and messageId are required"}), 400
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        return jsonify({
+            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
+        }), 400
+
+    with _session_file_lock(video_id):
+        session = _load_session(video_id, session_id)
+        if not session:
+            return jsonify({"error": "Chat session not found"}), 404
+        message = next((m for m in session.get("messages", []) if m.get("id") == message_id), None)
+        if not message or message.get("role") != "assistant":
+            return jsonify({"error": "Assistant message not found"}), 404
+
+        text = (message.get("text") or "").strip()
+        if not text:
+            return jsonify({"error": "Message has no text to speak"}), 400
+
+        existing_job_id = (message.get("audio") or {}).get("jobId")
+        if not force and existing_job_id:
+            with TTS_JOBS_LOCK:
+                cached = TTS_JOBS.get(existing_job_id)
+            if not cached:
+                cached = _load_tts_job(existing_job_id)
+            if cached and cached.get("status") != "error":
+                cached.setdefault("chatBinding", {
+                    "videoId": video_id,
+                    "sessionId": session_id,
+                    "messageId": message_id,
+                })
+                return jsonify(_public_tts_job(cached))
+
+        _cleanup_tts_jobs()
+        chat_binding = {
+            "videoId": video_id,
+            "sessionId": session_id,
+            "messageId": message_id,
+        }
+        job, _truncated, err = _build_tts_job(text, voice_name, chat_binding=chat_binding)
+        if err:
+            return jsonify({"error": err}), 400
+
+        message["audio"] = _public_audio_state(job)
+        _save_session(session)
+        return jsonify(_public_tts_job(job)), 202
+
+
+@app.route("/tts-job/<job_id>/events", methods=["GET"])
+def tts_job_events(job_id):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        job = _load_tts_job(job_id)
+    if not job:
+        return jsonify({"error": "TTS job not found"}), 404
+
+    cond = _job_condition(job_id)
+
+    # Cap how long a single SSE connection holds a Flask worker thread. Long
+    # Gemini TTS jobs normally complete well within this window; if the client
+    # is still interested past the cap it will reconnect (browsers honor the
+    # `retry:` hint), freeing the thread in the meantime.
+    MAX_STREAM_LIFETIME_SEC = 300
+
+    def stream():
+        last_payload = None
+        started = time.time()
+        try:
+            yield "retry: 2000\n\n"
+            while True:
+                with TTS_JOBS_LOCK:
+                    current = TTS_JOBS.get(job_id)
+                if not current:
+                    yield "event: closed\ndata: {}\n\n"
+                    return
+                public = _public_tts_job(current)
+                payload = json.dumps(public)
+                if payload != last_payload:
+                    yield f"data: {payload}\n\n"
+                    last_payload = payload
+                if public.get("status") in ("done", "error", "cancelled"):
+                    return
+                if time.time() - started >= MAX_STREAM_LIFETIME_SEC:
+                    yield "event: timeout\ndata: {}\n\n"
+                    return
+                with cond:
+                    cond.wait(timeout=2.0)
+        except GeneratorExit:
+            return
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return Response(stream(), mimetype="text/event-stream", headers=headers)
 
 
 @app.route("/tts-job/<job_id>", methods=["GET"])

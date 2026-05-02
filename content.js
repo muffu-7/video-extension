@@ -352,11 +352,12 @@
         sendResponse({ ok: false, error: "No video element found" });
         return;
       }
+      const wasPaused = video.paused;
       video.pause();
       sendResponse({
         ok: true,
         rect: getVideoRect(),
-        wasPaused: video.paused,
+        wasPaused,
         savedTime: video.currentTime,
       });
       return;
