@@ -6,11 +6,13 @@ import sys
 sys.dont_write_bytecode = True
 
 import base64
+from dataclasses import replace
 import glob
 import io
 import json
 import math
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -42,6 +44,26 @@ GEMINI_TTS_MAX_CHARS = int(os.environ.get("GEMINI_TTS_MAX_CHARS", "15000"))
 GEMINI_TTS_CHUNK_TARGET_CHARS = int(os.environ.get("GEMINI_TTS_CHUNK_TARGET_CHARS", "2200"))
 GEMINI_TTS_CHUNK_MAX_CHARS = int(os.environ.get("GEMINI_TTS_CHUNK_MAX_CHARS", "3000"))
 GEMINI_TTS_CONCURRENCY = max(1, int(os.environ.get("GEMINI_TTS_CONCURRENCY", "1")))
+QWEN_TTS_PROVIDER = "qwen_mlx"
+QWEN_TTS_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+QWEN_TTS_REPO = os.environ.get(
+    "QWEN_TTS_REPO",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "talking-head")),
+)
+QWEN_TTS_CONFIG = os.environ.get(
+    "QWEN_TTS_CONFIG",
+    os.path.join(QWEN_TTS_REPO, "config", "qwen.local.yaml"),
+)
+QWEN_TTS_PYTHON = os.environ.get(
+    "QWEN_TTS_PYTHON",
+    os.path.join(QWEN_TTS_REPO, ".venv", "bin", "python"),
+)
+QWEN_TTS_DEFAULT_VOICE = os.environ.get("QWEN_TTS_VOICE", "Aiden")
+QWEN_TTS_DEFAULT_INSTRUCT = os.environ.get("QWEN_TTS_INSTRUCT", "Natural, clear, friendly delivery.")
+QWEN_TTS_MAX_CHARS = int(os.environ.get("QWEN_TTS_MAX_CHARS", str(GEMINI_TTS_MAX_CHARS)))
+QWEN_TTS_CHUNK_TARGET_CHARS = int(os.environ.get("QWEN_TTS_CHUNK_TARGET_CHARS", "450"))
+QWEN_TTS_CHUNK_MAX_CHARS = int(os.environ.get("QWEN_TTS_CHUNK_MAX_CHARS", "650"))
+QWEN_TTS_CONCURRENCY = max(1, int(os.environ.get("QWEN_TTS_CONCURRENCY", "1")))
 TTS_JOB_DIR = os.path.expanduser("~/.cache/video-extension/tts")
 SESSION_DIR = os.path.expanduser("~/.cache/video-extension/sessions")
 SESSION_MAX_AGE_DAYS = int(os.environ.get("VIDEO_EXTENSION_SESSION_MAX_AGE_DAYS", "30"))
@@ -988,6 +1010,273 @@ def generate_gemini_tts_audio(text, voice_name=None):
     return _pcm_to_wav_bytes(pcm)
 
 
+def _resolve_repo_relative_path(value, repo_path):
+    if not value or not str(value).strip():
+        return ""
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = repo_path / path
+    return str(path)
+
+
+def generate_qwen_mlx_tts_audio(text, voice_name=None, instruction=None):
+    repo_path = Path(QWEN_TTS_REPO).expanduser()
+    config_path = Path(QWEN_TTS_CONFIG).expanduser()
+    if not repo_path.exists():
+        raise RuntimeError(f"Qwen TTS repo not found: {repo_path}")
+    if not config_path.exists():
+        raise RuntimeError(f"Qwen TTS config not found: {config_path}")
+    if str(repo_path) not in sys.path:
+        sys.path.insert(0, str(repo_path))
+
+    try:
+        from talking_head.audio import generate_speech_audio
+        from talking_head.config import load_config
+    except ImportError as e:
+        raise RuntimeError(
+            f"talking_head import failed: {e}. Set QWEN_TTS_REPO to the talking-head repo path "
+            "and install talking-head dependencies in the server venv."
+        ) from e
+
+    try:
+        app_config = load_config(config_path)
+        tools = app_config.tools
+        repo_model = _resolve_repo_relative_path(tools.qwen_model, repo_path)
+        repo_ref_audio = _resolve_repo_relative_path(tools.qwen_ref_audio, repo_path)
+        tools = replace(
+            tools,
+            tts_backend="qwen_mlx",
+            qwen_model=repo_model,
+            qwen_voice=voice_name or QWEN_TTS_DEFAULT_VOICE,
+            qwen_instruct=instruction or QWEN_TTS_DEFAULT_INSTRUCT,
+            qwen_ref_audio=repo_ref_audio,
+        )
+        with tempfile.TemporaryDirectory(prefix="video-extension-qwen-") as tmp:
+            output_path = Path(tmp) / "speech.wav"
+            generate_speech_audio(text, output_path, tools)
+            return output_path.read_bytes()
+    except Exception as e:
+        raise RuntimeError(f"Qwen MLX TTS failed: {e}") from e
+
+
+def _normalize_tts_provider(provider):
+    provider = (provider or "gemini").strip().lower()
+    if provider in ("gemini", "google", "google_gemini"):
+        return "gemini"
+    if provider in ("qwen", "qwen_mlx", "qwen-mlx", "talking_head", "talking-head"):
+        return QWEN_TTS_PROVIDER
+    return None
+
+
+def _tts_provider_model(provider):
+    return QWEN_TTS_MODEL if provider == QWEN_TTS_PROVIDER else GEMINI_TTS_MODEL
+
+
+def _tts_provider_default_voice(provider):
+    return QWEN_TTS_DEFAULT_VOICE if provider == QWEN_TTS_PROVIDER else GEMINI_TTS_DEFAULT_VOICE
+
+
+def _tts_provider_max_chars(provider):
+    return QWEN_TTS_MAX_CHARS if provider == QWEN_TTS_PROVIDER else GEMINI_TTS_MAX_CHARS
+
+
+def _tts_provider_chunk_target(provider):
+    return QWEN_TTS_CHUNK_TARGET_CHARS if provider == QWEN_TTS_PROVIDER else GEMINI_TTS_CHUNK_TARGET_CHARS
+
+
+def _tts_provider_chunk_max(provider):
+    return QWEN_TTS_CHUNK_MAX_CHARS if provider == QWEN_TTS_PROVIDER else GEMINI_TTS_CHUNK_MAX_CHARS
+
+
+def generate_tts_audio_for_provider(provider, text, voice_name=None, instruction=None):
+    if provider == QWEN_TTS_PROVIDER:
+        return generate_qwen_mlx_tts_audio(text, voice_name=voice_name, instruction=instruction)
+    return generate_gemini_tts_audio(text, voice_name=voice_name)
+
+
+def _qwen_batch_python():
+    configured = Path(QWEN_TTS_PYTHON).expanduser()
+    if configured.exists():
+        return str(configured)
+    return sys.executable
+
+
+def _qwen_batch_chunks_json_path(job_id):
+    return os.path.join(TTS_JOB_DIR, f"{job_id}_qwen_chunks.json")
+
+
+def _qwen_batch_output_dir(job_id):
+    return os.path.join(TTS_JOB_DIR, f"{job_id}_qwen_chunks")
+
+
+def _run_qwen_mlx_batch_job(job_id):
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+    if not job:
+        return
+
+    repo_path = Path(QWEN_TTS_REPO).expanduser()
+    config_path = Path(QWEN_TTS_CONFIG).expanduser()
+    chunks = job["chunks"]
+    missing_chunks = [
+        {"index": index, "text": chunk}
+        for index, chunk in enumerate(chunks, start=1)
+        if index > job.get("chunksDone", 0)
+    ]
+    if not missing_chunks:
+        return
+
+    chunks_json_path = _qwen_batch_chunks_json_path(job_id)
+    with open(chunks_json_path, "w") as f:
+        json.dump({"chunks": missing_chunks}, f)
+    output_dir = _qwen_batch_output_dir(job_id)
+    os.makedirs(output_dir, exist_ok=True)
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(repo_path) if not existing_pythonpath else f"{repo_path}{os.pathsep}{existing_pythonpath}"
+
+    cmd = [
+        _qwen_batch_python(),
+        "-m",
+        "talking_head.qwen_chunks",
+        "--chunks-json",
+        chunks_json_path,
+        "--output-dir",
+        output_dir,
+        "--config",
+        str(config_path),
+        "--voice",
+        job["voiceName"],
+        "--instruction",
+        job.get("instruction") or QWEN_TTS_DEFAULT_INSTRUCT,
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(repo_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stderr_lines = []
+    stderr_thread = threading.Thread(target=_collect_process_stderr, args=(process, stderr_lines), daemon=True)
+    stderr_thread.start()
+    _set_tts_job(job_id, qwen_process=process)
+
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                app.logger.warning("ignoring non-json qwen batch stdout: %s", line)
+                continue
+
+            with TTS_JOBS_LOCK:
+                job = TTS_JOBS.get(job_id)
+                if not job:
+                    _terminate_process(process)
+                    return
+                was_cancelled = job["cancel_event"].is_set()
+            if was_cancelled:
+                _terminate_process(process)
+                _set_tts_job(job_id, status="cancelled", finishedAt=time.time(), message="Cancelled")
+                return
+
+            event_type = event.get("event")
+            if event_type == "started":
+                _set_tts_job(job_id, status="running", message=f"Generating 0/{len(chunks)} chunks")
+            elif event_type == "chunk_started":
+                chunk_index = int(event.get("chunkIndex") or 0)
+                _set_tts_job(
+                    job_id,
+                    currentChunk=chunk_index,
+                    currentChunkChars=int(event.get("chars") or 0),
+                    message=f"Generating chunk {chunk_index}/{len(chunks)}",
+                )
+            elif event_type == "chunk_done":
+                _record_qwen_batch_chunk_done(job_id, event, len(chunks))
+            elif event_type == "error":
+                _terminate_process(process)
+                raise RuntimeError(event.get("message") or "Qwen batch generation failed")
+
+        return_code = process.wait()
+        stderr_thread.join(timeout=1)
+        if return_code != 0:
+            with TTS_JOBS_LOCK:
+                job = TTS_JOBS.get(job_id)
+                was_cancelled = bool(job and job["cancel_event"].is_set())
+            if was_cancelled:
+                _set_tts_job(job_id, status="cancelled", finishedAt=time.time(), message="Cancelled")
+                return
+            details = "\n".join(stderr_lines[-20:]).strip()
+            raise RuntimeError(details or f"Qwen batch generation exited with code {return_code}")
+    finally:
+        _set_tts_job(job_id, qwen_process=None)
+
+
+def _collect_process_stderr(process, stderr_lines):
+    if process.stderr is None:
+        return
+    for line in process.stderr:
+        stderr_lines.append(line.rstrip())
+
+
+def _terminate_process(process):
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def _record_qwen_batch_chunk_done(job_id, event, total_chunks):
+    chunk_index = int(event["chunkIndex"])
+    chunk_path = event["path"]
+    with TTS_JOBS_LOCK:
+        job = TTS_JOBS.get(job_id)
+        if not job:
+            return
+        chunk_paths = list(job.get("chunk_audio_paths", []))
+        chunk_paths[chunk_index - 1] = chunk_path
+        chunk_durations = list(job.get("chunkTimings", []))
+        chunk_durations.append({
+            "chunkIndex": chunk_index,
+            "chars": int(event.get("chars") or 0),
+            "elapsedSeconds": round(float(event.get("elapsedSeconds") or 0), 2),
+            "audioSeconds": round(float(event.get("audioSeconds") or 0), 2),
+        })
+    _set_tts_job(
+        job_id,
+        chunksDone=chunk_index,
+        chunksReady=chunk_index,
+        chunk_audio_paths=chunk_paths,
+        chunkTimings=chunk_durations,
+        message=f"Generated chunk {chunk_index}/{total_chunks}",
+    )
+
+
+def _validate_tts_provider_request(provider):
+    if provider == "gemini" and not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        return "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env."
+    if provider == QWEN_TTS_PROVIDER:
+        repo_path = Path(QWEN_TTS_REPO).expanduser()
+        config_path = Path(QWEN_TTS_CONFIG).expanduser()
+        if not repo_path.exists():
+            return f"Qwen TTS repo not found: {repo_path}. Set QWEN_TTS_REPO in .env."
+        if not config_path.exists():
+            return f"Qwen TTS config not found: {config_path}. Set QWEN_TTS_CONFIG in .env."
+    return None
+
+
 def _retry_delay_seconds(e):
     response_json = getattr(e, "response_json", None)
     if isinstance(response_json, dict):
@@ -1037,7 +1326,10 @@ def _error_status_code(e):
 
 TTS_JOBS = {}
 TTS_JOBS_LOCK = threading.Lock()
-TTS_SEMAPHORE = threading.Semaphore(GEMINI_TTS_CONCURRENCY)
+TTS_SEMAPHORES = {
+    "gemini": threading.Semaphore(GEMINI_TTS_CONCURRENCY),
+    QWEN_TTS_PROVIDER: threading.Semaphore(QWEN_TTS_CONCURRENCY),
+}
 
 TTS_JOB_CONDITIONS = {}
 TTS_JOB_CONDITIONS_LOCK = threading.Lock()
@@ -1066,7 +1358,7 @@ def _tts_job_meta_path(job_id):
 
 
 def _serializable_tts_job(job):
-    data = {k: v for k, v in job.items() if k != "cancel_event"}
+    data = {k: v for k, v in job.items() if k not in ("cancel_event", "qwen_process")}
     return data
 
 
@@ -1096,14 +1388,15 @@ def _load_tts_job(job_id):
 
 
 def _public_tts_job(job):
-    public = {k: v for k, v in job.items() if k not in ("cancel_event", "audio_path", "chunks", "chunk_audio_paths")}
+    public = {k: v for k, v in job.items() if k not in ("cancel_event", "qwen_process", "audio_path", "chunks", "chunk_audio_paths")}
     public["audioReady"] = bool(job.get("audio_path") and os.path.exists(job["audio_path"]))
     public["chunkAudioReady"] = [
         i + 1
         for i, path in enumerate(job.get("chunk_audio_paths", []))
         if path and os.path.exists(path)
     ]
-    public["concurrency"] = GEMINI_TTS_CONCURRENCY
+    public["provider"] = job.get("provider", "gemini")
+    public["concurrency"] = QWEN_TTS_CONCURRENCY if public["provider"] == QWEN_TTS_PROVIDER else GEMINI_TTS_CONCURRENCY
     return public
 
 
@@ -1133,6 +1426,7 @@ def _public_audio_state(job):
     return {
         "jobId": job.get("jobId"),
         "status": job.get("status"),
+        "provider": job.get("provider", "gemini"),
         "voice": job.get("voiceName"),
         "chunksTotal": job.get("chunksTotal", 0),
         "chunksReady": job.get("chunksReady", 0),
@@ -1178,6 +1472,7 @@ def _cleanup_tts_jobs(max_age_seconds=6 * 3600):
             paths = [TTS_JOBS[job_id].get("audio_path")]
             paths += TTS_JOBS[job_id].get("chunk_audio_paths", [])
             paths.append(_tts_job_meta_path(job_id))
+            paths.append(_qwen_batch_chunks_json_path(job_id))
             for path in paths:
                 if not path:
                     continue
@@ -1185,17 +1480,30 @@ def _cleanup_tts_jobs(max_age_seconds=6 * 3600):
                     os.unlink(path)
                 except OSError:
                     pass
+            try:
+                shutil.rmtree(_qwen_batch_output_dir(job_id))
+            except OSError:
+                pass
             TTS_JOBS.pop(job_id, None)
             _drop_job_condition(job_id)
 
 
-def _tts_error_payload(e, chunk_index=None):
+def _tts_error_payload(e, chunk_index=None, provider="gemini"):
     status_code = _error_status_code(e)
-    error_type = "gemini_error"
+    error_type = "qwen_generation_error" if provider == QWEN_TTS_PROVIDER else "gemini_error"
     retryable = False
     retry_after = None
 
-    if status_code == 429:
+    if provider == QWEN_TTS_PROVIDER:
+        text = str(e)
+        if "mlx-audio is not installed" in text or "No module named" in text:
+            error_type = "qwen_dependency_error"
+        elif "model path" in text or "model not found" in text or "repo not found" in text or "config not found" in text:
+            error_type = "qwen_config_error"
+        else:
+            error_type = "qwen_generation_error"
+        message = text
+    elif status_code == 429:
         error_type = "rate_limited"
         retryable = True
         retry_after = _retry_delay_seconds(e)
@@ -1228,6 +1536,8 @@ def _run_tts_job(job_id):
         return
 
     chunks = job["chunks"]
+    provider = job.get("provider", "gemini")
+    semaphore = TTS_SEMAPHORES.get(provider, TTS_SEMAPHORES["gemini"])
     acquired = False
 
     try:
@@ -1236,7 +1546,7 @@ def _run_tts_job(job_id):
             return
 
         _set_tts_job(job_id, status="queued", message="Queued")
-        TTS_SEMAPHORE.acquire()
+        semaphore.acquire()
         acquired = True
 
         if job["cancel_event"].is_set():
@@ -1247,53 +1557,69 @@ def _run_tts_job(job_id):
             _set_tts_job(job_id, startedAt=time.time())
         _set_tts_job(job_id, status="running")
 
-        for index, chunk in enumerate(chunks, start=1):
+        if provider == QWEN_TTS_PROVIDER:
+            _run_qwen_mlx_batch_job(job_id)
             with TTS_JOBS_LOCK:
                 job = TTS_JOBS.get(job_id)
                 if not job:
                     return
-                if index <= job.get("chunksDone", 0):
-                    continue
-
-            if job["cancel_event"].is_set():
+                was_cancelled = job["cancel_event"].is_set() or job.get("status") == "cancelled"
+            if was_cancelled:
                 _set_tts_job(job_id, status="cancelled", finishedAt=time.time(), message="Cancelled")
                 return
+        else:
+            for index, chunk in enumerate(chunks, start=1):
+                with TTS_JOBS_LOCK:
+                    job = TTS_JOBS.get(job_id)
+                    if not job:
+                        return
+                    if index <= job.get("chunksDone", 0):
+                        continue
 
-            _set_tts_job(
-                job_id,
-                currentChunk=index,
-                message=f"Generating chunk {index}/{len(chunks)}",
-                currentChunkChars=len(chunk),
-            )
-            started = time.perf_counter()
-            _set_tts_job(job_id, status="running", message=f"Generating chunk {index}/{len(chunks)}")
-            wav_bytes = generate_gemini_tts_audio(chunk, voice_name=job["voiceName"])
-            chunk_path = _tts_chunk_audio_path(job_id, index)
-            with open(chunk_path, "wb") as f:
-                f.write(wav_bytes)
-
-            with TTS_JOBS_LOCK:
-                job = TTS_JOBS.get(job_id)
-                if not job:
+                if job["cancel_event"].is_set():
+                    _set_tts_job(job_id, status="cancelled", finishedAt=time.time(), message="Cancelled")
                     return
-                chunk_paths = list(job.get("chunk_audio_paths", []))
-                chunk_paths[index - 1] = chunk_path
-                chunk_durations = list(job.get("chunkTimings", []))
-                chunk_durations.append({
-                    "chunkIndex": index,
-                    "chars": len(chunk),
-                    "elapsedSeconds": round(time.perf_counter() - started, 2),
-                    "audioSeconds": round(_wav_bytes_duration(wav_bytes), 2),
-                })
 
-            _set_tts_job(
-                job_id,
-                chunksDone=index,
-                chunksReady=index,
-                chunk_audio_paths=chunk_paths,
-                chunkTimings=chunk_durations,
-                message=f"Generated chunk {index}/{len(chunks)}",
-            )
+                _set_tts_job(
+                    job_id,
+                    currentChunk=index,
+                    message=f"Generating chunk {index}/{len(chunks)}",
+                    currentChunkChars=len(chunk),
+                )
+                started = time.perf_counter()
+                _set_tts_job(job_id, status="running", message=f"Generating chunk {index}/{len(chunks)}")
+                wav_bytes = generate_tts_audio_for_provider(
+                    provider,
+                    chunk,
+                    voice_name=job["voiceName"],
+                    instruction=job.get("instruction"),
+                )
+                chunk_path = _tts_chunk_audio_path(job_id, index)
+                with open(chunk_path, "wb") as f:
+                    f.write(wav_bytes)
+
+                with TTS_JOBS_LOCK:
+                    job = TTS_JOBS.get(job_id)
+                    if not job:
+                        return
+                    chunk_paths = list(job.get("chunk_audio_paths", []))
+                    chunk_paths[index - 1] = chunk_path
+                    chunk_durations = list(job.get("chunkTimings", []))
+                    chunk_durations.append({
+                        "chunkIndex": index,
+                        "chars": len(chunk),
+                        "elapsedSeconds": round(time.perf_counter() - started, 2),
+                        "audioSeconds": round(_wav_bytes_duration(wav_bytes), 2),
+                    })
+
+                _set_tts_job(
+                    job_id,
+                    chunksDone=index,
+                    chunksReady=index,
+                    chunk_audio_paths=chunk_paths,
+                    chunkTimings=chunk_durations,
+                    message=f"Generated chunk {index}/{len(chunks)}",
+                )
 
         with TTS_JOBS_LOCK:
             job = TTS_JOBS.get(job_id)
@@ -1329,13 +1655,13 @@ def _run_tts_job(job_id):
         _set_tts_job(
             job_id,
             status="error",
-            error=_tts_error_payload(e, chunk_index=chunk_index),
+            error=_tts_error_payload(e, chunk_index=chunk_index, provider=job.get("provider", "gemini") if job else "gemini"),
             finishedAt=time.time(),
             message="Speech generation failed",
         )
     finally:
         if acquired:
-            TTS_SEMAPHORE.release()
+            semaphore.release()
 
 
 @app.route("/chat-session", methods=["GET"])
@@ -1709,56 +2035,76 @@ def visual_analyze():
 def text_to_speech():
     body = request.get_json(force=True)
     text = body.get("text", "").strip()
-    voice_name = body.get("voiceName", GEMINI_TTS_DEFAULT_VOICE)
+    provider = _normalize_tts_provider(body.get("provider", "gemini"))
+    if not provider:
+        return jsonify({"error": "unsupported TTS provider"}), 400
+    voice_name = body.get("voiceName") or _tts_provider_default_voice(provider)
+    instruction = body.get("instruction") or None
 
     if not text:
         return jsonify({"error": "text is required"}), 400
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        return jsonify({
-            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
-        }), 400
+    provider_error = _validate_tts_provider_request(provider)
+    if provider_error:
+        return jsonify({"error": provider_error}), 400
 
     truncated = False
-    if len(text) > GEMINI_TTS_MAX_CHARS:
-        text = text[:GEMINI_TTS_MAX_CHARS].rstrip()
+    max_chars = _tts_provider_max_chars(provider)
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip()
         truncated = True
 
     try:
-        wav_bytes = generate_gemini_tts_audio(text, voice_name=voice_name)
+        wav_bytes = generate_tts_audio_for_provider(provider, text, voice_name=voice_name, instruction=instruction)
     except Exception as e:
         app.logger.exception("tts failed")
-        return jsonify({"error": f"Gemini TTS failed: {e}"}), 502
+        label = "Qwen MLX TTS" if provider == QWEN_TTS_PROVIDER else "Gemini TTS"
+        return jsonify({"error": f"{label} failed: {e}"}), 502
 
-    return jsonify({
+    payload = {
         "audioBase64": base64.b64encode(wav_bytes).decode("ascii"),
         "mimeType": "audio/wav",
-        "model": GEMINI_TTS_MODEL,
+        "provider": provider,
+        "model": _tts_provider_model(provider),
         "voiceName": voice_name,
         "truncated": truncated,
-        "freeTierNote": "Uses the Gemini Developer API Standard tier model pricing, which lists free-of-charge input/output for this TTS model.",
-    })
+    }
+    if provider == "gemini":
+        payload["freeTierNote"] = "Uses the Gemini Developer API Standard tier model pricing, which lists free-of-charge input/output for this TTS model."
+    return jsonify(payload)
 
 
-def _build_tts_job(text, voice_name, chat_binding=None):
+def _build_tts_job(text, voice_name, chat_binding=None, provider="gemini", instruction=None):
     """Validate, chunk, persist, and launch a TTS job. Returns (job_dict, truncated, error_message)."""
     if not text:
         return None, False, "text is required"
 
+    provider = _normalize_tts_provider(provider)
+    if not provider:
+        return None, False, "unsupported TTS provider"
+
     truncated = False
-    if len(text) > GEMINI_TTS_MAX_CHARS:
-        text = text[:GEMINI_TTS_MAX_CHARS].rstrip()
+    max_chars = _tts_provider_max_chars(provider)
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip()
         truncated = True
 
-    chunks = chunk_tts_text(text)
+    chunks = chunk_tts_text(
+        text,
+        target_chars=_tts_provider_chunk_target(provider),
+        max_chars=_tts_provider_chunk_max(provider),
+    )
     if not chunks:
         return None, truncated, "text is empty after normalization"
 
     job_id = uuid.uuid4().hex
+    voice_name = voice_name or _tts_provider_default_voice(provider)
     job = {
         "jobId": job_id,
         "status": "queued",
-        "model": GEMINI_TTS_MODEL,
-        "voiceName": voice_name or GEMINI_TTS_DEFAULT_VOICE,
+        "provider": provider,
+        "model": _tts_provider_model(provider),
+        "voiceName": voice_name,
+        "instruction": instruction or (QWEN_TTS_DEFAULT_INSTRUCT if provider == QWEN_TTS_PROVIDER else ""),
         "inputChars": len(text),
         "truncated": truncated,
         "chunksTotal": len(chunks),
@@ -1794,17 +2140,20 @@ def _build_tts_job(text, voice_name, chat_binding=None):
 def create_tts_job():
     body = request.get_json(force=True)
     text = (body.get("text") or "").strip()
-    voice_name = body.get("voiceName", GEMINI_TTS_DEFAULT_VOICE)
+    provider = _normalize_tts_provider(body.get("provider", "gemini"))
+    if not provider:
+        return jsonify({"error": "unsupported TTS provider"}), 400
+    voice_name = body.get("voiceName") or _tts_provider_default_voice(provider)
+    instruction = body.get("instruction") or None
 
     if not text:
         return jsonify({"error": "text is required"}), 400
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        return jsonify({
-            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
-        }), 400
+    provider_error = _validate_tts_provider_request(provider)
+    if provider_error:
+        return jsonify({"error": provider_error}), 400
 
     _cleanup_tts_jobs()
-    job, _truncated, err = _build_tts_job(text, voice_name)
+    job, _truncated, err = _build_tts_job(text, voice_name, provider=provider, instruction=instruction)
     if err:
         return jsonify({"error": err}), 400
     return jsonify(_public_tts_job(job)), 202
@@ -1816,15 +2165,18 @@ def create_chat_tts():
     video_id = body.get("videoId")
     session_id = body.get("sessionId")
     message_id = body.get("messageId")
-    voice_name = body.get("voiceName") or GEMINI_TTS_DEFAULT_VOICE
+    provider = _normalize_tts_provider(body.get("provider", "gemini"))
+    if not provider:
+        return jsonify({"error": "unsupported TTS provider"}), 400
+    voice_name = body.get("voiceName") or _tts_provider_default_voice(provider)
+    instruction = body.get("instruction") or None
     force = bool(body.get("force", False))
 
     if not video_id or not session_id or not message_id:
         return jsonify({"error": "videoId, sessionId, and messageId are required"}), 400
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        return jsonify({
-            "error": "GEMINI_API_KEY is not set. Paste your Google AI Studio key into .env.",
-        }), 400
+    provider_error = _validate_tts_provider_request(provider)
+    if provider_error:
+        return jsonify({"error": provider_error}), 400
 
     with _session_file_lock(video_id):
         session = _load_session(video_id, session_id)
@@ -1844,7 +2196,7 @@ def create_chat_tts():
                 cached = TTS_JOBS.get(existing_job_id)
             if not cached:
                 cached = _load_tts_job(existing_job_id)
-            if cached and cached.get("status") != "error":
+            if cached and cached.get("status") != "error" and cached.get("provider", "gemini") == provider:
                 cached.setdefault("chatBinding", {
                     "videoId": video_id,
                     "sessionId": session_id,
@@ -1858,7 +2210,13 @@ def create_chat_tts():
             "sessionId": session_id,
             "messageId": message_id,
         }
-        job, _truncated, err = _build_tts_job(text, voice_name, chat_binding=chat_binding)
+        job, _truncated, err = _build_tts_job(
+            text,
+            voice_name,
+            chat_binding=chat_binding,
+            provider=provider,
+            instruction=instruction,
+        )
         if err:
             return jsonify({"error": err}), 400
 
@@ -1940,10 +2298,13 @@ def cancel_tts_job(job_id):
     with TTS_JOBS_LOCK:
         job = TTS_JOBS.get(job_id)
         job["cancel_event"].set()
+        process = job.get("qwen_process")
         if job["status"] in ("queued", "running", "rate_limited"):
             job["status"] = "cancelling"
             job["message"] = "Cancelling"
             _persist_tts_job(job)
+        if process:
+            threading.Thread(target=_terminate_process, args=(process,), daemon=True).start()
         return jsonify(_public_tts_job(job))
 
 

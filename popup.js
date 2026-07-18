@@ -119,8 +119,12 @@
   const shortcutsIgnoreInputsToggle = document.getElementById("shortcuts-ignore-inputs-toggle");
   const shortcutsOverlayToggle = document.getElementById("shortcuts-overlay-toggle");
   const shortcutsSummary = document.getElementById("shortcuts-summary");
+  const keybindingsEnabledToggle = document.getElementById("keybindings-enabled-toggle");
+  const keybindingsIgnoreInputsToggle = document.getElementById("keybindings-ignore-inputs-toggle");
+  const keybindingsSummary = document.getElementById("keybindings-summary");
   const openShortcutsOptionsBtn = document.getElementById("open-shortcuts-options");
   const SHORTCUTS_STORAGE_KEY = (self.VSC_SHORTCUTS && self.VSC_SHORTCUTS.STORAGE_KEY) || "custom_shortcuts";
+  const KEYBINDINGS_STORAGE_KEY = (self.VSC_KEYBINDINGS && self.VSC_KEYBINDINGS.STORAGE_KEY) || "custom_keybindings";
 
   let currentVideoId = null;
   let currentChatSession = null;
@@ -779,7 +783,7 @@
 
     const engine = document.createElement("select");
     engine.className = "chat-tts-engine";
-    engine.innerHTML = '<option value="gemini">Gemini TTS</option><option value="local">Local browser</option>';
+    engine.innerHTML = '<option value="gemini">Gemini TTS</option><option value="qwen_mlx">Qwen Local TTS</option><option value="local">Local browser</option>';
 
     row.appendChild(btn);
     row.appendChild(engine);
@@ -1268,6 +1272,26 @@
     return kind === "visual" ? vaOutputBox : outputBox;
   }
 
+  function selectedTtsProvider(ui) {
+    return ui && ui.provider ? ui.provider.value : "gemini";
+  }
+
+  function generatedTtsLabel(provider) {
+    return provider === "qwen_mlx" ? "Qwen Local TTS" : "Gemini TTS";
+  }
+
+  function generatedTtsRetryHint(provider) {
+    return provider === "qwen_mlx"
+      ? "Retry manually later, or switch Engine to Local browser."
+      : "Retry manually later, or switch Engine to Local browser.";
+  }
+
+  function setProviderSelection(ui, provider) {
+    if (!ui || !ui.provider || !provider) return;
+    const exists = Array.from(ui.provider.options).some((option) => option.value === provider);
+    if (exists) ui.provider.value = provider;
+  }
+
   function ttsJobStorageKey(kind) {
     if (kind === "chat") return null;
     return currentVideoId ? `tts_job_${currentVideoId}_${kind}` : null;
@@ -1529,13 +1553,13 @@
     }
     if (ui.progress) ui.progress.hidden = true;
     if (ui.progressFill) ui.progressFill.style.width = "0%";
-    setTtsControlMode(ui, ui.provider ? ui.provider.value : "gemini");
+    setTtsControlMode(ui, selectedTtsProvider(ui));
     if (hide && ui.controls) ui.controls.hidden = true;
   }
 
   function syncTtsControls(audio, ui) {
     if (!ui || !ui.seek) return;
-    setTtsControlMode(ui, "gemini");
+    setTtsControlMode(ui, selectedTtsProvider(ui));
     const duration = currentTtsSeekMode === "chunks"
       ? generatedAudioDuration()
       : (Number.isFinite(audio.duration) ? audio.duration : 0);
@@ -1574,7 +1598,7 @@
 
   function switchTtsProvider(ui) {
     if (!ui || currentTtsUi !== ui) {
-      setTtsControlMode(ui, ui.provider.value);
+      setTtsControlMode(ui, selectedTtsProvider(ui));
       return;
     }
 
@@ -1586,8 +1610,9 @@
       resetSpeakButton(currentTtsButton);
     }
 
-    setTtsControlMode(ui, ui.provider.value);
-    if (ui.provider.value === "local") {
+    const provider = selectedTtsProvider(ui);
+    setTtsControlMode(ui, provider);
+    if (provider === "local") {
       if (ui.controls) ui.controls.hidden = true;
       if (ui.retry) ui.retry.hidden = !currentTtsJobId;
       resetSpeakButton(currentTtsButton);
@@ -1595,7 +1620,7 @@
       if (ui.controls) ui.controls.hidden = false;
       if (ui.playPause) ui.playPause.disabled = false;
       syncTtsPlaybackUi(currentTtsAudio, ui, currentTtsButton);
-      setTtsStatus(ui, "Gemini TTS selected.");
+      setTtsStatus(ui, `${generatedTtsLabel(provider)} selected.`);
     } else {
       resetTtsControls(ui, true);
     }
@@ -1752,8 +1777,9 @@
     currentTtsAbort = null;
     currentTtsSeekMode = "final";
     currentTtsWaitingForNextChunk = false;
-    currentTtsMode = "gemini";
-    setTtsControlMode(ui, "gemini");
+    currentTtsMode = job.provider || selectedTtsProvider(ui);
+    setProviderSelection(ui, currentTtsMode);
+    setTtsControlMode(ui, currentTtsMode);
 
     ui.playPause.disabled = false;
     ui.seek.disabled = false;
@@ -1840,6 +1866,8 @@
       if (job.error?.type === "rate_limited") {
         liveBtn.title = "Gemini TTS is rate limited. Retry manually later or switch Engine to Local browser.";
         setTtsStatus(liveUi, `${job.error.message} Retry manually later, or switch Engine to Local browser.`, "error");
+      } else if (job.error?.type && job.error.type.startsWith("qwen_")) {
+        liveBtn.title = `${generatedTtsLabel(job.provider)} failed. ${generatedTtsRetryHint(job.provider)}`;
       }
       return true;
     }
@@ -1926,7 +1954,9 @@
 
     if (!ui) return;
 
-    if (currentTtsMode === "chrome" && currentTtsButton === btn && ui.provider.value === "local") {
+    const provider = selectedTtsProvider(ui);
+
+    if (currentTtsMode === "chrome" && currentTtsButton === btn && provider === "local") {
       if (speechSynthesis.speaking || speechSynthesis.pending || speechSynthesis.paused) {
         stopChromeTts();
         resetSpeakButton(btn);
@@ -1937,7 +1967,7 @@
       return;
     }
 
-    if (ui.provider.value === "local") {
+    if (provider === "local") {
       if (currentTtsAbort || currentTtsPollTimer) {
         stopGeminiTts(false);
       } else {
@@ -1990,7 +2020,12 @@
     currentTtsWaitingForNextChunk = false;
     revokeTtsUrls();
     resetTtsControls(ui, false);
-    setTtsStatus(ui, isChat ? "Generating speech with Gemini TTS..." : "Generating speech with Gemini TTS... click the speaker again to cancel.");
+    setTtsStatus(
+      ui,
+      isChat
+        ? `Generating speech with ${generatedTtsLabel(provider)}...`
+        : `Generating speech with ${generatedTtsLabel(provider)}... click the speaker again to cancel.`
+    );
 
     try {
       const requestUrl = isChat ? `${SERVER_URL}/chat-tts` : `${SERVER_URL}/tts-job`;
@@ -1999,8 +2034,9 @@
             videoId: currentVideoId,
             sessionId: currentChatSession?.sessionId,
             messageId,
+            provider,
           }
-        : { text };
+        : { text, provider };
       const resp = await fetch(requestUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2009,10 +2045,12 @@
       });
       const data = await resp.json();
       if (!resp.ok) {
-        throw new Error(data.error || "Gemini TTS failed");
+        throw new Error(data.error || `${generatedTtsLabel(provider)} failed`);
       }
       currentTtsAbort = null;
       currentTtsJobId = data.jobId;
+      currentTtsMode = data.provider || provider;
+      setProviderSelection(ui, currentTtsMode);
       if (!isChat) saveTtsJob(kind, data.jobId);
       setTtsStatus(ui, ttsJobMessage(data));
       updateChunkProgressUi(ui, data);
@@ -2027,9 +2065,9 @@
         resetTtsControls(ui, true);
         resetSpeakButton(btn);
       } else {
-        btn.title = e.message || "Gemini TTS failed";
+        btn.title = e.message || `${generatedTtsLabel(provider)} failed`;
         setSpeakButtonLabel(btn, "Retry", "error");
-        setTtsStatus(ui, e.message || "Gemini TTS failed.", "error");
+        setTtsStatus(ui, e.message || `${generatedTtsLabel(provider)} failed.`, "error");
         setTimeout(() => resetSpeakButton(btn), 1500);
       }
       currentTtsAbort = null;
@@ -2138,7 +2176,7 @@
         if (!currentTtsJobId || currentTtsUi !== ui || !currentTtsButton) return;
         try {
           stopChromeTts();
-          currentTtsMode = "gemini";
+          currentTtsMode = selectedTtsProvider(ui);
           ui.retry.hidden = true;
           setSpeakButtonLabel(currentTtsButton, "Generating...", "loading");
           currentTtsButton.classList.add("loading");
@@ -2180,9 +2218,11 @@
         }
 
         currentTtsJobId = job.jobId;
+        currentTtsMode = job.provider || "gemini";
         currentTtsKind = kind;
         currentTtsButton = btn;
         currentTtsUi = ui;
+        setProviderSelection(ui, currentTtsMode);
         currentTtsWaitingForNextChunk = false;
         currentTtsChunkDurations = (job.chunkTimings || [])
           .sort((a, b) => a.chunkIndex - b.chunkIndex)
@@ -2223,6 +2263,29 @@
           resolve(response);
         });
       });
+    });
+  }
+
+  function getActiveTab() {
+    return new Promise((resolve) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        resolve(tabs[0] || null);
+      });
+    });
+  }
+
+  function setYoutubeTabsVisible(visible) {
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      if (btn.dataset.tab !== "shortcuts-tab") btn.hidden = !visible;
+    });
+  }
+
+  function activateTab(tabId) {
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.tab === tabId);
+    });
+    document.querySelectorAll(".tab-panel").forEach((panel) => {
+      panel.classList.toggle("active", panel.id === tabId);
     });
   }
 
@@ -2380,14 +2443,22 @@
   // --- Init ---
 
   async function init() {
+    const activeTab = await getActiveTab();
     const resp = await sendToContent({ type: "get-video-id" });
 
     if (!resp || !resp.videoId) {
-      mainControls.hidden = true;
+      setYoutubeTabsVisible(false);
+      activateTab("shortcuts-tab");
+      mainControls.hidden = false;
       noVideoEl.hidden = false;
+      noVideoEl.textContent = activeTab && activeTab.url && activeTab.url.startsWith("http")
+        ? "Website keybindings can be configured for this page."
+        : "Website keybindings cannot run on browser-internal pages, but you can still configure them here.";
       return;
     }
 
+    setYoutubeTabsVisible(true);
+    activateTab("chat-tab");
     currentVideoId = resp.videoId;
     currentIsShortsPage = resp.isShorts === true;
     noVideoEl.hidden = true;
@@ -2632,20 +2703,63 @@
     }
   }
 
-  function loadShortcutsSettings() {
-    chrome.storage.local.get(SHORTCUTS_STORAGE_KEY, (result) => {
+  function applyKeybindingsSettingsToUi(settings) {
+    const defs = self.VSC_KEYBINDINGS;
+    const norm = defs ? defs.normalizeSettings(settings) : (settings || {});
+    keybindingsEnabledToggle.checked = norm.enabled === true;
+    keybindingsIgnoreInputsToggle.checked = norm.ignoreInInputs !== false;
+    const count = Array.isArray(norm.bindings) ? norm.bindings.length : 0;
+    if (count === 0) {
+      keybindingsSummary.textContent = "No keybindings configured yet.";
+    } else {
+      keybindingsSummary.textContent = `${count} keybinding${count === 1 ? "" : "s"} configured.`;
+    }
+  }
+
+  function loadKeyboardControlSettings() {
+    chrome.storage.local.get([SHORTCUTS_STORAGE_KEY, KEYBINDINGS_STORAGE_KEY], (result) => {
       applyShortcutsSettingsToUi(result[SHORTCUTS_STORAGE_KEY]);
+      applyKeybindingsSettingsToUi(result[KEYBINDINGS_STORAGE_KEY]);
     });
   }
 
   function updateShortcutsSetting(patch) {
-    chrome.storage.local.get(SHORTCUTS_STORAGE_KEY, (result) => {
+    chrome.storage.local.get([SHORTCUTS_STORAGE_KEY, KEYBINDINGS_STORAGE_KEY], (result) => {
       const defs = self.VSC_SHORTCUTS;
       const current = defs
         ? defs.normalizeSettings(result[SHORTCUTS_STORAGE_KEY])
         : Object.assign({}, result[SHORTCUTS_STORAGE_KEY] || {});
       const next = Object.assign({}, current, patch);
-      chrome.storage.local.set({ [SHORTCUTS_STORAGE_KEY]: next });
+      const writes = { [SHORTCUTS_STORAGE_KEY]: next };
+      if (patch.enabled === true) {
+        const kbDefs = self.VSC_KEYBINDINGS;
+        const keybindings = kbDefs
+          ? kbDefs.normalizeSettings(result[KEYBINDINGS_STORAGE_KEY])
+          : Object.assign({}, result[KEYBINDINGS_STORAGE_KEY] || {});
+        keybindings.enabled = false;
+        writes[KEYBINDINGS_STORAGE_KEY] = keybindings;
+      }
+      chrome.storage.local.set(writes);
+    });
+  }
+
+  function updateKeybindingsSetting(patch) {
+    chrome.storage.local.get([SHORTCUTS_STORAGE_KEY, KEYBINDINGS_STORAGE_KEY], (result) => {
+      const defs = self.VSC_KEYBINDINGS;
+      const current = defs
+        ? defs.normalizeSettings(result[KEYBINDINGS_STORAGE_KEY])
+        : Object.assign({}, result[KEYBINDINGS_STORAGE_KEY] || {});
+      const next = Object.assign({}, current, patch);
+      const writes = { [KEYBINDINGS_STORAGE_KEY]: next };
+      if (patch.enabled === true) {
+        const shortcutDefs = self.VSC_SHORTCUTS;
+        const shortcuts = shortcutDefs
+          ? shortcutDefs.normalizeSettings(result[SHORTCUTS_STORAGE_KEY])
+          : Object.assign({}, result[SHORTCUTS_STORAGE_KEY] || {});
+        shortcuts.enabled = false;
+        writes[SHORTCUTS_STORAGE_KEY] = shortcuts;
+      }
+      chrome.storage.local.set(writes);
     });
   }
 
@@ -2659,6 +2773,14 @@
 
   shortcutsOverlayToggle.addEventListener("change", () => {
     updateShortcutsSetting({ showSpeedOverlay: shortcutsOverlayToggle.checked });
+  });
+
+  keybindingsEnabledToggle.addEventListener("change", () => {
+    updateKeybindingsSetting({ enabled: keybindingsEnabledToggle.checked });
+  });
+
+  keybindingsIgnoreInputsToggle.addEventListener("change", () => {
+    updateKeybindingsSetting({ ignoreInInputs: keybindingsIgnoreInputsToggle.checked });
   });
 
   openShortcutsOptionsBtn.addEventListener("click", () => {
@@ -2675,18 +2797,18 @@
     if (changes[SHORTCUTS_STORAGE_KEY]) {
       applyShortcutsSettingsToUi(changes[SHORTCUTS_STORAGE_KEY].newValue);
     }
+    if (changes[KEYBINDINGS_STORAGE_KEY]) {
+      applyKeybindingsSettingsToUi(changes[KEYBINDINGS_STORAGE_KEY].newValue);
+    }
   });
 
-  loadShortcutsSettings();
+  loadKeyboardControlSettings();
 
   // --- Tab switching ---
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-      btn.classList.add("active");
-      document.getElementById(btn.dataset.tab).classList.add("active");
+      activateTab(btn.dataset.tab);
     });
   });
 

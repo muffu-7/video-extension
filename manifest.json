@@ -24,6 +24,11 @@
   },
   "content_scripts": [
     {
+      "matches": ["<all_urls>"],
+      "js": ["keybindings-defs.js", "keybindings-content.js"],
+      "run_at": "document_start"
+    },
+    {
       "matches": ["*://*.youtube.com/*"],
       "js": ["shortcuts-defs.js", "content.js"],
       "run_at": "document_idle"

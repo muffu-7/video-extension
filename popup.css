@@ -1392,6 +1392,12 @@ button:disabled {
   justify-content: space-between;
 }
 
+.shortcuts-mode-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 4px 0;
+}
+
 .primary-btn-block {
   width: 100%;
   padding: 9px 0;

@@ -19,11 +19,12 @@ A Chrome/Edge extension for power-watching YouTube. It loops selected time segme
   - Frames are collaged into grids with timestamp overlays and sent alongside the transcript to `codex exec --image`
   - Optional **web search** toggle to enrich answers with live internet context
 - **Custom keyboard shortcuts** — Bind any key (with optional `Ctrl`/`Shift`/`Alt`/`Cmd` modifiers) to a catalog of ~25 video actions: play/pause, rewind, advance, per-binding speed steps, volume, mute, fullscreen, captions, frame step, segment navigation, markers A/B, Shorts navigation, and more. Actions work on the main YouTube player (including during ads), on Shorts as you scroll, and on the hover-preview video that plays when you mouse over a thumbnail.
+- **Website keybindings** — Optionally remap one key to another on webpages, or bind keys directly to scroll actions with per-binding sensitivity. Website keybindings and YouTube shortcuts are separate modes and cannot be enabled at the same time.
 - **Speed overlay** — A small semi-transparent `1.00x` pill shown over the video player that updates live as speed changes. Toggleable from the popup, the options page, or a keyboard shortcut (default `V`).
 - **Shorts helpers** — Auto-scroll to the next Short when the current one finishes, plus bindable keys for next/previous Short (defaults: left `Shift` and `Tab`).
 - **Per-video storage** — Segments are saved per YouTube video ID and persist across browser sessions.
 - **Transcript caching** — Transcripts are cached locally per video ID so repeat requests for the same video don't re-download. Cache auto-cleans entries older than 7 days.
-- **Gemini TTS read-aloud** — Reads generated answers and summaries aloud using chunked Gemini TTS jobs with progress, retry handling, playback controls, seeking, and speed selection.
+- **Generated TTS read-aloud** — Reads generated answers and summaries aloud using chunked Gemini or local Qwen MLX TTS jobs with progress, retry handling, playback controls, seeking, and speed selection.
 - **Smart seek handling** — If you manually seek into a saved segment, playback continues from there. If you seek outside all segments, it jumps to the next one.
 
 ## Architecture
@@ -35,7 +36,7 @@ Chrome Extension (popup + content script)
     |  POST /summary                (transcript-based)
     |  POST /ask                    (transcript-based)
     |  POST /visual-analyze         (screenshots + transcript)
-    |  POST /tts-job + poll status  (Gemini TTS)
+    |  POST /tts-job + poll status  (Gemini or Qwen MLX TTS)
     v
 Local Flask Server (server.py :5055)
     |
@@ -43,7 +44,7 @@ Local Flask Server (server.py :5055)
     |  2. If not cached, fetch from youtube-transcript.io
     |  3. For visual analysis: decode frames, crop, dedup, build collages
     |  4. Pipe transcript via stdin + collage images via --image to codex exec
-    |  5. Chunk long TTS text and generate stitched WAV audio with Gemini
+    |  5. Chunk long TTS text and generate stitched WAV audio with Gemini or local Qwen MLX
     v
 Codex CLI --> OpenAI LLM --> segments / summary / answer / visual analysis back to extension
 ```
@@ -118,6 +119,21 @@ This integration uses the Gemini Developer API model `gemini-3.1-flash-tts-previ
 
 Free-tier Gemini TTS can be very quota-constrained. If Google returns `429 RESOURCE_EXHAUSTED`, the server stops the job with a structured error, includes retry timing when available, and the popup shows a manual Retry button instead of silently retrying. Since each chunk is a Gemini request, lowering chunk count can reduce quota pressure, while smaller chunks improve perceived progress and reliability.
 
+For local Qwen MLX TTS, keep the sibling `talking-head` repo and model files outside the extension root, then configure:
+
+```bash
+QWEN_TTS_REPO=/Users/muffu/Documents/Projects/pythonProjects/talking-head
+QWEN_TTS_CONFIG=/Users/muffu/Documents/Projects/pythonProjects/talking-head/config/qwen.local.yaml
+QWEN_TTS_PYTHON=/Users/muffu/Documents/Projects/pythonProjects/talking-head/.venv/bin/python
+QWEN_TTS_VOICE=Aiden
+QWEN_TTS_INSTRUCT=Natural, clear, friendly delivery.
+QWEN_TTS_CHUNK_TARGET_CHARS=450
+QWEN_TTS_CHUNK_MAX_CHARS=650
+QWEN_TTS_CONCURRENCY=1
+```
+
+The server invokes `talking_head.qwen_chunks` through `QWEN_TTS_PYTHON`, loading the Qwen MLX model once per TTS job and generating all chunks sequentially before the subprocess exits. The Qwen model is configured by `QWEN_TTS_CONFIG`, normally `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit`. Install the optional MLX dependencies in the selected Python environment and download the model in the `talking-head` repo before choosing **Qwen Local TTS** in the popup.
+
 ### 3. Load the extension
 
 1. Open `chrome://extensions` (or `edge://extensions`)
@@ -164,7 +180,7 @@ The total duration is shown next to the **Segments** label and updates live as y
    - **Short Summary** — quick 3-5 sentence overview
    - **Key Pointers** — all important points without timestamps, using concise moderate detail
 3. The result appears in the output box at the bottom of the popup
-4. Click the speaker button to read the result aloud with Gemini TTS, if `GEMINI_API_KEY` is configured. Long results show chunk progress and begin playback once the first chunk is ready.
+4. Choose a TTS engine, then click the speaker button to read the result aloud. Long generated-TTS results show chunk progress and begin playback once the first chunk is ready.
 
 ### Ask about the video
 
@@ -225,6 +241,17 @@ Shortcuts are fully customizable from a dedicated options page.
 - Playback shortcuts continue to work while a YouTube ad is playing.
 - Segment/marker shortcuts always target the main YouTube player.
 - All settings (bindings, toggles, steps) are stored in `chrome.storage.local` and persist across browser restarts and extension reloads. Reinstalling the extension or explicitly clicking **Clear all data** wipes them.
+
+### Website keybindings
+
+Website keybindings are configured from the same options page as YouTube shortcuts. A binding can either remap a source key to another key, or run a page scroll action directly.
+
+- Keybindings are stored separately under `custom_keybindings`.
+- Enabling website keybindings disables YouTube shortcuts; enabling YouTube shortcuts disables website keybindings.
+- Scroll actions include small-step up/down/left/right, page up/down, scroll to top, and scroll to bottom.
+- Small-step and page scroll actions support a per-row sensitivity multiplier.
+- Keybindings can be ignored while typing in inputs, textareas, selects, or `contenteditable` elements.
+- Remapped key events are synthetic browser events. They work for normal page-level keyboard handlers, but browser-native shortcuts or sites that require trusted keyboard events may ignore them. Use explicit scroll actions when the goal is page scrolling.
 
 ### Speed overlay
 
@@ -379,16 +406,17 @@ Captures video frames as screenshots, builds collages, and sends them with the t
 
 ### `POST /tts`
 
-Generates read-aloud audio using Gemini TTS in a single blocking request. This endpoint is kept for short smoke tests and backwards compatibility; the popup uses `/tts-job` for better progress and reliability.
+Generates read-aloud audio using a generated TTS provider in a single blocking request. This endpoint is kept for short smoke tests and backwards compatibility; the popup uses `/tts-job` for better progress and reliability.
 
 ```json
 // Request
-{ "text": "Say cheerfully: Have a wonderful day!", "voiceName": "Kore" }
+{ "text": "Say cheerfully: Have a wonderful day!", "provider": "gemini", "voiceName": "Kore" }
 
 // Response
 {
   "audioBase64": "...",
   "mimeType": "audio/wav",
+  "provider": "gemini",
   "model": "gemini-3.1-flash-tts-preview",
   "voiceName": "Kore",
   "truncated": false
@@ -397,18 +425,19 @@ Generates read-aloud audio using Gemini TTS in a single blocking request. This e
 
 ### `POST /tts-job`
 
-Starts an asynchronous chunked Gemini TTS job and returns immediately.
+Starts an asynchronous chunked generated TTS job and returns immediately. `provider` defaults to `gemini`; use `qwen_mlx` for local Qwen MLX.
 
 ```json
 // Request
-{ "text": "Long summary text...", "voiceName": "Kore" }
+{ "text": "Long summary text...", "provider": "qwen_mlx", "voiceName": "Aiden" }
 
 // Response
 {
   "jobId": "...",
   "status": "queued",
-  "model": "gemini-3.1-flash-tts-preview",
-  "voiceName": "Kore",
+  "provider": "qwen_mlx",
+  "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit",
+  "voiceName": "Aiden",
   "inputChars": 9844,
   "chunksTotal": 5,
   "chunksDone": 0,
@@ -441,11 +470,11 @@ Returns TTS progress. The popup polls this endpoint while speech is generated.
 
 Status values are `queued`, `running`, `done`, `error`, `cancelling`, and `cancelled`; older cached jobs may still show `rate_limited`. Errors are structured with `type`, `message`, `retryable`, `retryAfterSeconds`, and `chunkIndex`.
 
-The server uses `GEMINI_TTS_CONCURRENCY` to limit simultaneous Gemini TTS calls. The default is `1`, which is safer for free-tier projects and means multiple YouTube tabs can create jobs while the server processes them in order.
+The server uses provider-specific concurrency limits (`GEMINI_TTS_CONCURRENCY` and `QWEN_TTS_CONCURRENCY`) to limit simultaneous generated TTS calls. The defaults are `1`, which is safer for quota-constrained Gemini projects and for local MLX generation.
 
 TTS job metadata and audio are cached under `~/.cache/video-extension/tts/`, so a popup can be closed and reopened for the same video and still recover the generated audio while the local server cache entry exists. Old finished jobs are cleaned up automatically.
 
-The popup shows a read-aloud toolbar above generated text, so the Engine selector is available before playback starts and does not cover the text. `Gemini TTS` uses the chunked server job and generated WAV playback with seek controls, while `Local browser` uses Chrome's built-in `speechSynthesis` without calling Gemini. Local browser audio is not a generated WAV file, so it is not cached like Gemini output and browser APIs do not support precise seeking; the popup hides the generated-audio control panel in local mode and uses a simple Stop/restart button.
+The popup shows a read-aloud toolbar above generated text, so the Engine selector is available before playback starts and does not cover the text. `Gemini TTS` and `Qwen Local TTS` use the chunked server job and generated WAV playback with seek controls, while `Local browser` uses Chrome's built-in `speechSynthesis` without calling the server. Local browser audio is not a generated WAV file, so it is not cached like generated output and browser APIs do not support precise seeking; the popup hides the generated-audio control panel in local mode and uses a simple Stop/restart button.
 
 ### `GET /tts-job/<jobId>/chunk/<index>/audio`
 
@@ -515,7 +544,7 @@ Nothing leaves your machine unless you invoke an AI feature, in which case the t
 
 ## Limitations
 
-- Only works on YouTube in the desktop browser (no mobile, no other video sites). Keyboard shortcuts target any `<video>` element found on a YouTube page but the extension is not injected on other domains.
+- YouTube video shortcuts only work on YouTube in the desktop browser. Website keybindings are injected on normal webpages when enabled.
 - The local server must be running for AI features (segment generation, summaries, Q&A, visual analysis). It is **not** required for manual segments, keyboard shortcuts, or the speed overlay.
 - Codex CLI must be installed and authenticated for transcript/visual AI features
 - Gemini TTS requires `GEMINI_API_KEY` in `.env`

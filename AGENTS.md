@@ -29,6 +29,15 @@ Essential context for coding agents working in this Chrome extension repo. Full 
 - Free-tier Gemini TTS can return `429 RESOURCE_EXHAUSTED`; preserve partial/generated chunks, surface the error, and let users manually retry Gemini or choose Chrome `speechSynthesis` from the popup Engine selector.
 - Do not auto-retry Gemini TTS failures. Retries must come from the popup Retry button, and handled TTS failures should not be logged with `console.error` because Chrome surfaces them as extension errors.
 
+## Qwen Local TTS Notes
+
+- Qwen local TTS uses the sibling `talking-head` repo via `QWEN_TTS_REPO` and `QWEN_TTS_CONFIG`.
+- Model: `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit` through `mlx-audio`.
+- Keep Qwen model files, `talking-head/.venv`, and generated audio outside the extension root.
+- `QWEN_TTS_PYTHON` should point to the Python environment that has `mlx-audio` and `talking-head` installed.
+- The popup provider value is `qwen_mlx`; it uses the same chunked `/tts-job` contract as Gemini.
+- Qwen generation is local but heavy; keep `QWEN_TTS_CONCURRENCY=1` unless the user explicitly wants to experiment. Prefer chunk settings around `QWEN_TTS_CHUNK_TARGET_CHARS=450` and `QWEN_TTS_CHUNK_MAX_CHARS=650` because the batch CLI loads the model once per job and smaller chunks improve time-to-first-audio.
+
 ## Validation Checklist
 
 - Linux: `PYTHONDONTWRITEBYTECODE=1 /home/mufaddaltatiwala/projects/video-extension-venv/bin/python -m py_compile server.py`

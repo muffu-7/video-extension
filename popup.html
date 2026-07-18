@@ -18,7 +18,7 @@
         <button class="tab-btn" data-tab="transcript-tab">Transcript</button>
         <button class="tab-btn" data-tab="visual-tab">Visual Analysis</button>
         <button class="tab-btn" data-tab="shorts-tab">Shorts</button>
-        <button class="tab-btn" data-tab="shortcuts-tab">Shortcuts</button>
+        <button class="tab-btn" data-tab="shortcuts-tab">Keyboard</button>
       </div>
 
       <!-- ===== Tab 1: Persistent Chat ===== -->
@@ -236,6 +236,7 @@
             Engine
             <select id="tts-provider">
               <option value="gemini" selected>Gemini TTS</option>
+              <option value="qwen_mlx">Qwen Local TTS</option>
               <option value="local">Local browser</option>
             </select>
           </label>
@@ -341,6 +342,7 @@
             Engine
             <select id="va-tts-provider">
               <option value="gemini" selected>Gemini TTS</option>
+              <option value="qwen_mlx">Qwen Local TTS</option>
               <option value="local">Local browser</option>
             </select>
           </label>
@@ -391,7 +393,7 @@
         </div>
       </div>
 
-      <!-- ===== Tab 4: Shortcuts ===== -->
+      <!-- ===== Tab 4: Keyboard ===== -->
       <div id="shortcuts-tab" class="tab-panel">
         <div class="shortcuts-section">
           <label>Custom keyboard shortcuts</label>
@@ -422,10 +424,32 @@
 
           <p id="shortcuts-summary" class="shorts-notice">No shortcuts configured yet.</p>
 
-          <button id="open-shortcuts-options" class="primary-btn-block">Open shortcut settings</button>
+          <div class="shortcuts-mode-divider"></div>
+
+          <label>Website keybindings</label>
+
+          <div class="shortcuts-toggle-row">
+            <span class="toggle-label">Enabled on webpages</span>
+            <label class="toggle">
+              <input type="checkbox" id="keybindings-enabled-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="shortcuts-toggle-row">
+            <span class="toggle-label">Ignore in input fields</span>
+            <label class="toggle">
+              <input type="checkbox" id="keybindings-ignore-inputs-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <p id="keybindings-summary" class="shorts-notice">No keybindings configured yet.</p>
+
+          <button id="open-shortcuts-options" class="primary-btn-block">Open keyboard settings</button>
 
           <p class="shorts-notice subtle">
-            Playback keys (rewind, advance, speed, volume, pause) also work while a YouTube ad is playing.
+            YouTube shortcuts and website keybindings are separate modes and cannot be enabled at the same time.
           </p>
         </div>
       </div>
@@ -437,6 +461,7 @@
     </div>
   </div>
   <script src="shortcuts-defs.js"></script>
+  <script src="keybindings-defs.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

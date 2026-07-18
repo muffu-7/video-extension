@@ -2,6 +2,8 @@
 
 Quick reference for how `server.py` talks to the Gemini TTS API and how it chunks long text. Scope is the local Flask server only; nothing here covers the Chrome extension UI.
 
+Note: the shared `/tts-job` pipeline now also supports `provider: "qwen_mlx"` for local Qwen MLX TTS through the sibling `talking-head` repo. Gemini remains the default provider, and the Gemini-specific details below still apply when `provider` is omitted or set to `"gemini"`.
+
 ## Model and audio format
 
 - Model: `gemini-3.1-flash-tts-preview` (constant `GEMINI_TTS_MODEL`).

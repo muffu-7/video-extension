@@ -476,12 +476,15 @@
   // --- Custom keyboard shortcuts ---
 
   const SC = self.VSC_SHORTCUTS;
+  const KEYBINDINGS_STORAGE_KEY = "custom_keybindings";
   let shortcutSettings = SC ? SC.normalizeSettings(null) : null;
+  let keybindingsEnabled = false;
 
   function loadShortcutSettings() {
     if (!SC || !contextValid()) return;
-    chrome.storage.local.get(SC.STORAGE_KEY, (result) => {
+    chrome.storage.local.get([SC.STORAGE_KEY, KEYBINDINGS_STORAGE_KEY], (result) => {
       shortcutSettings = SC.normalizeSettings(result[SC.STORAGE_KEY]);
+      keybindingsEnabled = !!(result[KEYBINDINGS_STORAGE_KEY] && result[KEYBINDINGS_STORAGE_KEY].enabled === true);
       applyOverlayVisibility();
     });
   }
@@ -489,9 +492,16 @@
   if (SC && contextValid()) {
     loadShortcutSettings();
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local" || !changes[SC.STORAGE_KEY]) return;
-      shortcutSettings = SC.normalizeSettings(changes[SC.STORAGE_KEY].newValue);
-      applyOverlayVisibility();
+      if (area !== "local") return;
+      if (!changes[SC.STORAGE_KEY] && !changes[KEYBINDINGS_STORAGE_KEY]) return;
+      if (changes[SC.STORAGE_KEY]) {
+        shortcutSettings = SC.normalizeSettings(changes[SC.STORAGE_KEY].newValue);
+        applyOverlayVisibility();
+      }
+      if (changes[KEYBINDINGS_STORAGE_KEY]) {
+        const next = changes[KEYBINDINGS_STORAGE_KEY].newValue;
+        keybindingsEnabled = !!(next && next.enabled === true);
+      }
     });
   }
 
@@ -810,7 +820,7 @@
   // --- Dispatcher ---
 
   function onShortcutKeydown(e) {
-    if (!SC || !shortcutSettings || shortcutSettings.enabled === false) return;
+    if (!SC || !shortcutSettings || shortcutSettings.enabled === false || keybindingsEnabled) return;
     if (!shortcutSettings.bindings || shortcutSettings.bindings.length === 0) return;
     if (shortcutSettings.ignoreInInputs !== false && SC.isTypingTarget(e.target)) return;
 

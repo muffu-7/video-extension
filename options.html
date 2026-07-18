@@ -9,8 +9,8 @@
   <div class="page">
     <header class="page-header">
       <div class="header-left">
-        <h1>Video Shortcuts</h1>
-        <p class="subtitle">Bind keyboard keys to video player actions on YouTube.</p>
+        <h1>Keyboard Controls</h1>
+        <p class="subtitle">Configure YouTube video shortcuts or remap keys on regular webpages.</p>
       </div>
       <div class="header-actions">
         <button id="reset-btn" class="secondary-btn" title="Restore default bindings">Reset defaults</button>
@@ -37,6 +37,45 @@
 
       <p id="empty-notice" class="empty-notice" hidden>
         No shortcuts yet. Click <b>+ Add new</b> to create one.
+      </p>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2>Website keybindings</h2>
+          <p class="card-note">Remap one key to another on webpages. Enabling this disables YouTube shortcuts.</p>
+        </div>
+        <button id="kb-add-btn" class="ghost-btn">+ Add new</button>
+      </div>
+
+      <div class="setting-row">
+        <label for="kb-enabled">Enable website keybindings</label>
+        <label class="toggle">
+          <input type="checkbox" id="kb-enabled">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <label for="kb-ignore-inputs">Ignore while typing in input fields</label>
+        <label class="toggle">
+          <input type="checkbox" id="kb-ignore-inputs">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="list-header keybinding-list-header">
+        <span>From key</span>
+        <span>Action</span>
+        <span>Target / Sensitivity</span>
+        <span></span>
+      </div>
+
+      <div id="kb-rows" class="rows"></div>
+
+      <p id="kb-empty-notice" class="empty-notice" hidden>
+        No keybindings yet. Click <b>+ Add new</b> to create one.
       </p>
     </section>
 
@@ -94,11 +133,12 @@
     </section>
 
     <footer class="page-footer">
-      <p>Changes take effect on any YouTube tab without reload. Playback keys (rewind / advance / speed / volume / pause) work during ads too.</p>
+      <p>Changes take effect without reload on pages where the extension is already running. Reload old tabs if a newly added content script is not active yet.</p>
     </footer>
   </div>
 
   <script src="shortcuts-defs.js"></script>
+  <script src="keybindings-defs.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
