@@ -11,6 +11,8 @@
   let shortsAutoScrollEnabled = false;
   let shortsBoundVideo = null;
   let shortsObserver = null;
+  let shortsAdvanceLock = false;
+  let shortsLastTime = 0;
 
   function contextValid() {
     try { return !!chrome.runtime.id; } catch { return false; }
@@ -117,8 +119,21 @@
     ensureSpeedOverlay();
   }
 
+  // On Shorts pages the first <video> in DOM order is often a stale
+  // watch-page player or a hover-preview left over from SPA navigation,
+  // so prefer the active reel's player over a bare querySelector.
+  function getShortsActiveVideo() {
+    return (
+      document.querySelector("ytd-reel-video-renderer[is-active] video") ||
+      document.querySelector("#shorts-player video") ||
+      document.querySelector("ytd-shorts video")
+    );
+  }
+
   function findAndAttachVideo() {
-    const el = document.querySelector("video");
+    const el =
+      (isShortsPage() && getShortsActiveVideo()) ||
+      document.querySelector("video");
     if (el && el !== video) {
       attachVideo(el);
     }
@@ -172,23 +187,72 @@
   function cleanupShortsBinding() {
     if (!shortsBoundVideo) return;
     shortsBoundVideo.removeEventListener("ended", onShortEnded);
-    shortsBoundVideo.removeEventListener("progress", keepShortLoopDisabled);
+    shortsBoundVideo.removeEventListener("timeupdate", onShortTimeUpdate);
     shortsBoundVideo.removeEventListener("playing", keepShortLoopDisabled);
+    shortsBoundVideo.removeEventListener("durationchange", onShortDurationChange);
     shortsBoundVideo = null;
+    shortsLastTime = 0;
   }
 
   function keepShortLoopDisabled() {
-    if (!shortsAutoScrollEnabled || !isShortsPage() || !video) return;
-    video.loop = false;
-    video.removeAttribute("loop");
+    if (!shortsAutoScrollEnabled || !isShortsPage() || !shortsBoundVideo) return;
+    shortsBoundVideo.loop = false;
+    shortsBoundVideo.removeAttribute("loop");
+  }
+
+  function triggerShortsAdvance() {
+    if (shortsAdvanceLock) return;
+    shortsAdvanceLock = true;
+    // onNavigate releases the lock as soon as the next short loads; the
+    // timer only covers a click that failed to navigate anywhere.
+    setTimeout(() => { shortsAdvanceLock = false; }, 1500);
+
+    const nextButton = getShortsNextButton();
+    if (nextButton) {
+      nextButton.click();
+      return;
+    }
+    // The button selectors are partly locale-dependent; scrolling the next
+    // reel into view advances regardless of UI language.
+    const active = document.querySelector("ytd-reel-video-renderer[is-active]");
+    const next = active && active.nextElementSibling;
+    if (next && typeof next.scrollIntoView === "function") {
+      next.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }
 
   function onShortEnded() {
     if (!shortsAutoScrollEnabled || !isShortsPage()) return;
-    const nextButton = getShortsNextButton();
-    if (nextButton) {
-      nextButton.click();
+    triggerShortsAdvance();
+  }
+
+  // YouTube reasserts video.loop at arbitrary points during playback, which
+  // suppresses "ended" entirely. Re-disable it on every timeupdate, and as a
+  // backstop advance when the playhead reaches the end or when a native loop
+  // slipped through and wrapped back to the start.
+  function onShortTimeUpdate() {
+    if (!shortsAutoScrollEnabled || !isShortsPage() || !shortsBoundVideo) return;
+    if (shortsBoundVideo.loop || shortsBoundVideo.hasAttribute("loop")) {
+      keepShortLoopDisabled();
     }
+
+    const t = shortsBoundVideo.currentTime;
+    const d = shortsBoundVideo.duration;
+    const prev = shortsLastTime;
+    shortsLastTime = t;
+    if (!Number.isFinite(d) || d <= 0) return;
+
+    const nearEnd = d - t <= 0.2;
+    const loopedBack = prev >= d - 1 && t <= 0.5 && !shortsBoundVideo.paused;
+    if (nearEnd || loopedBack) {
+      triggerShortsAdvance();
+    }
+  }
+
+  // Fires when the same <video> element is reused for a new short; without
+  // this reset the loop-around check could compare times across two videos.
+  function onShortDurationChange() {
+    shortsLastTime = 0;
   }
 
   function syncShortsAutoScroll() {
@@ -206,8 +270,9 @@
     shortsBoundVideo = video;
     keepShortLoopDisabled();
     shortsBoundVideo.addEventListener("ended", onShortEnded);
-    shortsBoundVideo.addEventListener("progress", keepShortLoopDisabled);
+    shortsBoundVideo.addEventListener("timeupdate", onShortTimeUpdate);
     shortsBoundVideo.addEventListener("playing", keepShortLoopDisabled);
+    shortsBoundVideo.addEventListener("durationchange", onShortDurationChange);
   }
 
   function disconnectShortsObserver() {
@@ -267,6 +332,8 @@
     lastVideoId = videoId;
     lastWasShorts = onShorts;
     currentSegmentIndex = 0;
+    shortsAdvanceLock = false;
+    shortsLastTime = 0;
 
     findAndAttachVideo();
     loadSegments(videoId);
